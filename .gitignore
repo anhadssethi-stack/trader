@@ -1,4 +1,4 @@
-data/
+/data/
 config/settings.local.yaml
 __pycache__/
 *.pyc

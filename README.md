@@ -40,11 +40,14 @@ All demo data is random, and every page shows a red **DEMO DATA** banner.
 
 ### Load real data
 
+Run these one at a time and let each finish before starting the next. `backfill-fast` takes several
+minutes, and the dashboard keeps running until you press Ctrl+C.
+
 ```bash
 python -m nse_research.cli init            # Nifty 500 list + F&O list from NSE
 python -m nse_research.cli backfill-fast   # 10 years of prices from Yahoo (~5-10 min, no delivery %)
 python -m nse_research.cli daily           # NSE bhavcopy + delivery for recent days, then scan
-streamlit run app/streamlit_app.py         # opens http://localhost:8501
+streamlit run app/streamlit_app.py         # then open http://localhost:8501 in your browser
 ```
 
 `backfill-fast` gets you working in minutes. To replace the Yahoo history with NSE's own files

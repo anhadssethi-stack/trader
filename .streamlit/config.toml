@@ -1,0 +1,7 @@
+# Skip Streamlit's first-run email prompt and usage tracking.
+# headless = true also stops it opening a browser tab: open http://localhost:8501 yourself.
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
