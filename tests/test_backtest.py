@@ -8,8 +8,9 @@ import pytest
 from nse_research.backtest.costs import trade_costs
 from nse_research.backtest.engine import backtest_symbol, position_size, simulate, trade_pnl
 from nse_research.backtest.setups import SETUP_BY_ID, SETUPS, setup_signals
-from nse_research.backtest.stats import (max_drawdown_r, oos_split, portfolio_curve, probability_sentence,
-                                         summarize, walk_forward, wilson)
+from nse_research.backtest.stats import (fixed_params_in_years, max_drawdown_r, oos_split, portfolio_curve,
+                                         probability_sentence, setup_summary_table, summarize, walk_forward,
+                                         wilson)
 from nse_research.indicators.core import add_indicators
 from nse_research.scanner.rules import breakouts
 
@@ -155,6 +156,26 @@ def test_portfolio_respects_slot_limit(settings):
     t["exit_date"] = date(2021, 2, 1)
     _, pf = portfolio_curve(t, settings)
     assert pf["taken"] == 10 and pf["skipped"] == 5
+
+
+def test_portfolio_stops_when_capital_is_gone(settings):
+    t = _trades([-1] * 100)
+    t["net_pnl"] = -1_000_000.0                 # ₹10 lakh lost per trade on ₹50 lakh capital
+    _, pf = portfolio_curve(t, settings)
+    assert pf["taken"] == 5 and pf["ruined_on"] is not None and pf["max_dd_pct"] == 100.0
+
+
+def test_summary_table_keeps_setups_without_trades(settings):
+    tab = setup_summary_table(_trades([1, -1] * 20, setup="L_golden_cross"), pd.DataFrame(), settings,
+                              ["L_golden_cross", "L_delivery_up"])
+    row = tab.set_index("setup").loc["L_delivery_up"]
+    assert row["trades"] == 0 and row["confidence"]
+
+
+def test_fixed_params_in_years():
+    g = pd.DataFrame({"stop_atr": [2.0, 2.0, 3.0], "target_r": [2.0, 2.0, 3.0], "exit_reason": "target",
+                      "entry_date": [date(2020, 5, 1), date(2018, 5, 1), date(2020, 5, 1)], "r": [1.0, 5.0, 9.0]})
+    assert fixed_params_in_years(g, [2020], 2.0, 2.0)["r"].tolist() == [1.0]
 
 
 def test_oos_split_by_date():

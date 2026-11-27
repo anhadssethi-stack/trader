@@ -197,10 +197,14 @@ def backtest_symbols(settings: Settings, store: Store) -> list[str]:
     if settings["backtest"]["universe"] == "current":
         from ..data.pipeline import Pipeline
         return Pipeline(settings, store, http=object(), sources={}).scan_symbols()
+    # Every stock ever stored (including ones since delisted or dropped from the index), but
+    # only those with enough history for the indicators; NSE daily files add ~2,900 symbols
+    # that have only a few days of data until the full NSE backfill is run.
     series = settings["universe"]["series"]
     ph = ",".join("?" * len(series))
-    return store.q(f"SELECT DISTINCT symbol FROM prices WHERE series IN ({ph}) ORDER BY symbol",
-                   series)["symbol"].tolist()
+    return store.q(f"""SELECT symbol FROM prices WHERE series IN ({ph}) GROUP BY symbol
+                       HAVING count(*) >= ? ORDER BY symbol""",
+                   [*series, settings["scanner"]["min_history_days"]])["symbol"].tolist()
 
 
 def run_backtest(settings: Settings, store: Store, setup_ids: list[str] | None = None,

@@ -53,18 +53,23 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "backtest":
         from .backtest.engine import run_backtest
-        from .backtest.stats import setup_summary_table
+        from .backtest.stats import setup_summary_table, warnings_for
         st = _store(s, a.db)
         trades, grid, meta = run_backtest(s, st, a.setups, a.symbols)
         run_id = date.today().isoformat() + "_" + str(int(__import__("time").time()))
         st.save_backtest(run_id, trades, grid, meta)
-        tab = setup_summary_table(trades, grid, s)
-        if tab.empty:
+        tab = setup_summary_table(trades, grid, s, meta["setups"])
+        if trades.empty:
             print("No trades. Is there price history stored? (see README)")
             return 0
         cols = ["setup", "trades", "win_rate", "win_ci_low", "win_ci_high", "expectancy_r", "profit_factor",
-                "max_dd_pct", "oos_expectancy_r", "wf_expectancy_r", "confidence"]
-        print(tab[cols].round(2).to_string(index=False))
+                "max_dd_pct", "oos_expectancy_r", "wf_expectancy_r", "wf_fixed_expectancy_r", "confidence"]
+        print(f"Tested {meta['symbols_tested']} stocks with at least "
+              f"{s['scanner']['min_history_days']} days of history.\n")
+        print(tab.reindex(columns=cols).round(2).to_string(index=False))
+        for r in tab.itertuples():
+            if r.trades == 0:
+                print(f"\n{r.setup}: no trades. " + " ".join(warnings_for(r._asdict(), s["backtest"])))
         print(f"\nSaved as run {run_id}. Open the Backtest page in the dashboard for details.")
         return 0
 

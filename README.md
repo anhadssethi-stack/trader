@@ -198,7 +198,14 @@ which backtested setups fired on today's bar, with their historical record.
 | S_macd_downtrend | MACD crosses below its signal line, close below the 200 DMA, short |
 | S_volume_down | Volume ≥ 2× average on a down day, close below the 50 DMA, short |
 
-Shorts are only taken on F&O stocks (multi-day shorts need futures). To add a setup, add a
+Shorts are only taken on F&O stocks (multi-day shorts need futures). `L_delivery_up` needs
+delivery % history, which only NSE files have, so it shows 0 trades until you run the NSE backfill.
+
+The backtest covers **every stock stored** with at least `min_history_days` of history, not only
+today's Nifty 500, so stocks that later dropped out still count (less survivorship bias). The
+daily NSE file adds about 2,900 symbols with only a few days of data; they are skipped until
+the NSE backfill gives them history, after which the liquidity filter (₹5 cr/day on the signal
+day) decides which ones trade. To add a setup, add a
 function and a `Setup(...)` entry in `nse_research/backtest/setups.py`.
 
 ### How each trade is simulated
@@ -232,12 +239,18 @@ All numbers below are in `config/settings.yaml` under `backtest:` and `costs:`.
   100+ = higher. Small samples are flagged everywhere they appear.
 - **Max drawdown**: trades are replayed through a ₹50 lakh account with 10 position slots
   (signals that arrive while all slots are full are skipped), and the peak-to-trough fall of
-  that equity curve is reported.
+  that equity curve is reported. If losses use up all the capital, the replay stops there and the
+  drawdown shows 100%.
 - **Out-of-sample**: the last 30% of trades by entry date are reported separately. A setup
   whose edge disappears out-of-sample is probably curve-fit.
 - **Walk-forward**: for each year, the stop/target pair (from a 3 × 3 grid of 1.5/2/3 ATR ×
   1.5/2/3 R) that worked best over the previous 3 years is picked, then tested on that year
   only. Only trades that had closed before the year began are used for picking.
+  Out-of-sample and walk-forward cover **different years** (walk-forward starts once 3 years
+  of history exist, out-of-sample is only the last 30%), so they can disagree. The column
+  `wf_fixed_expectancy_r` ("Same years, fixed stop/target") shows the default 2 ATR / 2R over the
+  walk-forward years: if walk-forward is much better than that, the gain came from re-picking
+  the stop and target (usually the wider 3 ATR stop); if they are close, those years were simply better.
 - Results by year, by exit reason, and the full trade list (CSV download).
 
 ### Caveats you should read

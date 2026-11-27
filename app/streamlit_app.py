@@ -323,8 +323,8 @@ def load_bt_summary(run_id: str | None = None):
     if runs.empty:
         return None
     run_id = run_id or runs["run_id"].iloc[0]
-    trades, grid, _ = load_bt(run_id)
-    return setup_summary_table(trades, grid, S) if not trades.empty else None
+    trades, grid, meta = load_bt(run_id)
+    return setup_summary_table(trades, grid, S, meta.get("setups")) if not trades.empty else None
 
 
 def _pct(x, nd=1):
@@ -360,7 +360,9 @@ def page_backtest(_ov):
             "- **Max drawdown** replays the trades as one account with your capital, risk and 10% cap "
             "(at most 10 positions at once). It is the worst fall from a peak.\n"
             "- **Out-of-sample** = the last 30% of the period. **Walk-forward** = each year, stop and target "
-            "were chosen from the previous 3 years only, then tested on that year.\n"
+            "were chosen from the previous 3 years only, then tested on that year. They cover different "
+            "years; **Same years, fixed stop/target** shows the default settings over the walk-forward years, "
+            "so you can see whether re-picking stop/target helped or the years were simply better.\n"
             "- Fewer than 30 trades is labelled **LOW** confidence. These are historical frequencies, not "
             "predictions.")
     if tab is None or tab.empty:
@@ -370,18 +372,20 @@ def page_backtest(_ov):
     t2 = tab if side == "All" else tab[tab["side"] == side.lower()]
     view = pd.DataFrame({
         "Setup": t2["name"], "Side": t2["side"], "Trades": t2["trades"],
-        "Win rate": t2["win_rate"], "95% range": t2.apply(lambda r: f"{r.win_ci_low:.0f}–{r.win_ci_high:.0f}%", axis=1),
+        "Win rate": t2["win_rate"], "95% range": t2.apply(lambda r: f"{r.win_ci_low:.0f}–{r.win_ci_high:.0f}%"
+                              if r.trades else "", axis=1),
         "Expectancy (R)": t2["expectancy_r"], "Expectancy %": t2["expectancy_pct"],
         "Avg win %": t2["avg_win_pct"], "Avg loss %": t2["avg_loss_pct"],
         "Profit factor": t2["profit_factor"], "Max DD %": t2["max_dd_pct"],
         f"Hit {p['target_r']}R before stop": t2["target_before_stop_pct"],
         "Out-of-sample (R)": t2["oos_expectancy_r"], "Walk-forward (R)": t2["wf_expectancy_r"],
+        "Same years, fixed stop/target (R)": t2["wf_fixed_expectancy_r"],
         "Confidence": t2["confidence"],
     })
     st.dataframe(view, hide_index=True, width="stretch", column_config={
         c: st.column_config.NumberColumn(format="%.2f") for c in
         ["Expectancy (R)", "Expectancy %", "Avg win %", "Avg loss %", "Profit factor", "Out-of-sample (R)",
-         "Walk-forward (R)"]} | {c: st.column_config.NumberColumn(format="%.1f") for c in
+         "Walk-forward (R)", "Same years, fixed stop/target (R)"]} | {c: st.column_config.NumberColumn(format="%.1f") for c in
                                  ["Win rate", "Max DD %", f"Hit {p['target_r']}R before stop"]})
 
     st.subheader("Setup detail")
@@ -394,6 +398,8 @@ def page_backtest(_ov):
     st.info(probability_sentence(row, p["target_r"], bt))
     for w in warnings_for(row, bt):
         st.warning(w)
+    if not row.trades:
+        return
     tr = trades[trades["setup"] == sid]
     m = st.columns(6)
     m[0].metric("Trades", f"{row.trades:,}")
@@ -423,16 +429,25 @@ def page_backtest(_ov):
             {"Period": f"Out-of-sample (from {row.oos_from})", "Trades": row.oos_trades,
              "Win rate": _pct(row.oos_win_rate),
              "Expectancy": f"{row.oos_expectancy_r:+.2f}R" if row.oos_expectancy_r == row.oos_expectancy_r else "n/a"},
-            {"Period": "Walk-forward (all test years)", "Trades": row.wf_trades, "Win rate": _pct(row.wf_win_rate),
+            {"Period": f"Walk-forward (test years from {row.wf_from})", "Trades": row.wf_trades,
+             "Win rate": _pct(row.wf_win_rate),
              "Expectancy": f"{row.wf_expectancy_r:+.2f}R" if row.wf_expectancy_r == row.wf_expectancy_r else "n/a"},
+            {"Period": f"Same years, fixed {p['stop_atr']}× ATR / {p['target_r']}R", "Trades": None,
+             "Win rate": "",
+             "Expectancy": _num(row.wf_fixed_expectancy_r) + "R"},
         ]), hide_index=True)
+        st.caption("Out-of-sample and walk-forward cover different years, so they can disagree. Compare "
+                   "walk-forward with the fixed-stop/target row: if both are similar, the difference comes "
+                   "from which years were tested, not from re-picking the stop and target.")
         st.caption(f"Costs average {row.costs_per_trade_pct:.2f}% of position value per round trip "
                    f"({row.costs_per_trade_r:.2f}R).")
 
     curve, pf = portfolio_curve(tr, S)
     if not curve.empty:
         st.markdown(f"**Account replay**: ₹{S['profile']['capital']:,.0f} start, {pf['slots']} positions max, "
-                    f"{pf['taken']} trades taken, {pf['skipped']} skipped because all slots were full.")
+                    f"{pf['taken']} trades taken, {pf['skipped']} skipped because all slots were full."
+                    + (f" **The capital was used up by {pf['ruined_on']}; no trades after that.**"
+                       if pf.get("ruined_on") else ""))
         st.line_chart(curve.set_index("date")["equity"])
     yr = yearly(tr)
     if not yr.empty:

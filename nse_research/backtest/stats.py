@@ -56,14 +56,23 @@ def portfolio_curve(trades: pd.DataFrame, settings) -> tuple[pd.DataFrame, dict]
     slots = max(1, int(100 // settings["profile"]["max_position_pct"]))
     if t.empty:
         return pd.DataFrame(columns=["date", "equity"]), {"max_dd_pct": 0.0, "taken": 0, "skipped": 0}
-    open_exits: list = []
-    taken, skipped = [], 0
+    open_pos: list = []          # (exit_date, net_pnl) of positions taken and not yet closed
+    taken, skipped, booked, ruined_on = [], 0, 0.0, None
     for row in t.itertuples():
-        open_exits = [e for e in open_exits if e >= row.entry_date]  # still open on entry day
-        if len(open_exits) >= slots:
+        still = []
+        for e, p in open_pos:
+            if e < row.entry_date:
+                booked += p            # closed before this entry: its P&L is in the account
+            else:
+                still.append((e, p))
+        open_pos = still
+        if cap + booked <= 0:          # account wiped out: no new trades after this
+            ruined_on = str(pd.Timestamp(row.entry_date).date())
+            break
+        if len(open_pos) >= slots:
             skipped += 1
             continue
-        open_exits.append(row.exit_date)
+        open_pos.append((row.exit_date, row.net_pnl))
         taken.append(row)
     tk = pd.DataFrame(taken)
     pnl = tk.groupby("exit_date")["net_pnl"].sum().sort_index()
@@ -76,7 +85,7 @@ def portfolio_curve(trades: pd.DataFrame, settings) -> tuple[pd.DataFrame, dict]
     total = (vals[-1] / cap - 1) * 100
     return curve, {"max_dd_pct": float(dd), "taken": len(tk), "skipped": skipped,
                    "total_return_pct": float(total), "avg_return_pct_per_year": float(total / years),
-                   "slots": slots}
+                   "slots": slots, "ruined_on": ruined_on}
 
 
 def summarize(trades: pd.DataFrame, settings) -> dict:
@@ -118,6 +127,7 @@ def summarize(trades: pd.DataFrame, settings) -> dict:
     }
     _, pf = portfolio_curve(t, settings)
     out.update({"max_dd_pct": pf["max_dd_pct"], "portfolio_taken": pf["taken"],
+                "portfolio_ruined_on": pf.get("ruined_on"),
                 "portfolio_skipped": pf["skipped"], "portfolio_return_pct": pf.get("total_return_pct"),
                 "portfolio_return_pct_per_year": pf.get("avg_return_pct_per_year")})
     for col in [c for c in t.columns if c.startswith("hit_") and c.endswith("r")]:
@@ -183,8 +193,20 @@ def walk_forward(grid: pd.DataFrame, wf: dict) -> tuple[pd.DataFrame, pd.DataFra
     return pd.DataFrame(rows), (pd.concat(oos) if oos else pd.DataFrame())
 
 
-def setup_summary_table(trades: pd.DataFrame, grid: pd.DataFrame, settings) -> pd.DataFrame:
-    """One row per setup: full-period stats, out-of-sample split and walk-forward."""
+def fixed_params_in_years(grid: pd.DataFrame, years, stop_atr: float, target_r: float) -> pd.DataFrame:
+    """Trades with the default stop/target in the given entry years. Compared with the
+    walk-forward result, this shows how much came from re-picking stop/target and how
+    much simply from which years were tested."""
+    if grid.empty or not len(years):
+        return grid.iloc[0:0]
+    g = grid[grid["exit_reason"].isin(CLOSED) & (grid["stop_atr"] == stop_atr) & (grid["target_r"] == target_r)]
+    return g[pd.to_datetime(g["entry_date"]).dt.year.isin(list(years))]
+
+
+def setup_summary_table(trades: pd.DataFrame, grid: pd.DataFrame, settings,
+                        setup_ids: list[str] | None = None) -> pd.DataFrame:
+    """One row per setup: full-period stats, out-of-sample split and walk-forward.
+    Setups in `setup_ids` that produced no trades still get a row (trades = 0)."""
     from .setups import SETUP_BY_ID
     bt = settings["backtest"]
     rows = []
@@ -205,15 +227,29 @@ def setup_summary_table(trades: pd.DataFrame, grid: pd.DataFrame, settings) -> p
             "wf_years": len(wf_tab), "wf_trades": len(wf_trades),
             "wf_expectancy_r": wf_trades["r"].mean() if len(wf_trades) else float("nan"),
             "wf_win_rate": (wf_trades["r"] > 0).mean() * 100 if len(wf_trades) else float("nan"),
+            "wf_from": int(wf_tab["year"].min()) if len(wf_tab) else None,
+            "wf_fixed_expectancy_r": _mean_r(fixed_params_in_years(
+                grid[grid["setup"] == sid] if not grid.empty else grid,
+                wf_tab["year"] if len(wf_tab) else [], bt["stop_atr"], bt["target_r"])),
         })
+    done = {r["setup"] for r in rows}
+    for sid in setup_ids or []:
+        if sid not in done:
+            su = SETUP_BY_ID.get(sid)
+            rows.append({"setup": sid, "name": su.name if su else sid, "side": su.side if su else "",
+                         "trades": 0, "confidence": confidence_label(0, bt), "exits": {}})
     return pd.DataFrame(rows)
+
+
+def _mean_r(t: pd.DataFrame) -> float:
+    return float(t["r"].mean()) if len(t) else float("nan")
 
 
 def warnings_for(row: dict | pd.Series, bt: dict) -> list[str]:
     """Plain-English warnings about whether this setup's numbers can be trusted."""
     w = []
     n = int(row.get("trades", 0) or 0)
-    if n < bt["min_trades_reliable"]:
+    if 0 < n < bt["min_trades_reliable"]:
         w.append(f"Only {n} trades: too few to trust (need at least {bt['min_trades_reliable']}).")
     elif n < bt["min_trades_moderate"]:
         w.append(f"{n} trades: treat the win rate as a rough guide (range shown).")
@@ -223,6 +259,12 @@ def warnings_for(row: dict | pd.Series, bt: dict) -> list[str]:
     wfe = row.get("wf_expectancy_r")
     if wfe is not None and wfe == wfe and wfe <= 0 and (row.get("expectancy_r") or 0) > 0:
         w.append("Walk-forward result is negative: choosing stop/target from the past did not work going forward.")
+    if n == 0 and str(row.get("setup", "")).endswith("delivery_up"):
+        w.append("No trades: this setup needs delivery % history, which only comes from NSE files. "
+                 "Run `update --since 2016-01-01` to load it.")
+    if isinstance(row.get("portfolio_ruined_on"), str):
+        w.append(f"In the account replay, losses used up the whole capital by {row['portfolio_ruined_on']}; "
+                 "the replay stops there, so the max drawdown shows 100%.")
     if (row.get("share_yahoo_bars") or 0) > 50:
         w.append("Most price bars came from Yahoo, not NSE. Run the NSE backfill for more reliable history.")
     if (row.get("share_not_in_current_universe") or 0) < 1:
@@ -242,6 +284,6 @@ def probability_sentence(row: dict | pd.Series, target_r: float, bt: dict) -> st
     s = (f"This setup historically hit its {target_r:g}R target before its stop "
          f"{row['target_before_stop_pct']:.0f}% of the time over {n} trades "
          f"(95% range {lo:.0f}–{hi:.0f}%).")
-    if n < bt["min_trades_reliable"]:
+    if 0 < n < bt["min_trades_reliable"]:
         s += " LOW CONFIDENCE: fewer than 30 trades."
     return s
