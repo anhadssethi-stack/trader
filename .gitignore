@@ -1,0 +1,6 @@
+data/
+config/settings.local.yaml
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

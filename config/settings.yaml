@@ -1,0 +1,62 @@
+# NSE Research settings. Every number the app uses lives here; nothing is hard-coded.
+# Copy to config/settings.local.yaml to override without touching this file
+# (settings.local.yaml is git-ignored and is merged on top of this one).
+
+profile:
+  capital: 5000000            # trading capital in rupees (₹50,00,000)
+  risk_per_trade_pct: 2.0     # max loss per trade as % of capital
+  max_position_pct: 10.0      # max capital in one stock, % of capital
+  holding_days_min: 5
+  holding_days_max: 180
+  allow_short: true           # SELL = short. Multi-day shorts need F&O (stock futures/options)
+  short_requires_fno: true    # if true, SELL setups are only offered on F&O stocks
+
+universe:
+  mode: nifty500              # nifty500 | all_nse | custom
+  extra_symbols: []           # always scanned in addition to the mode above
+  custom_symbols: []          # used when mode = custom
+  series: [EQ, BE]            # equity series kept from the bhavcopy
+
+benchmark:
+  index_name: "Nifty 500"     # name as it appears in NSE's ind_close_all file
+  yahoo_ticker: "^CRSLDX"     # Yahoo ticker for the same index (fallback)
+
+data:
+  db_path: data/nse_research.duckdb
+  cache_dir: data/cache
+  history_years: 10
+  request_delay_sec: 0.8      # pause between NSE requests; NSE throttles aggressive clients
+  request_timeout_sec: 20
+  max_retries: 3
+  publish_hour_ist: 19        # don't expect today's files before this hour (IST)
+  price_sources: [nse_udiff, nse_legacy, nse_full_bhav, yahoo]   # tried in order for each day
+  delivery_sources: [nse_full_bhav, nse_mto]
+  index_sources: [nse_index_close, yahoo]
+  corp_action_min_change: 0.02  # prev-close vs last-close gap that counts as a split/bonus
+  retry_window_days: 14       # daily run re-tries NSE for days that only have Yahoo data
+
+scanner:
+  dma_periods: [20, 50, 200]
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  rsi_bull_zone: [50, 70]
+  rsi_bear_zone: [30, 50]
+  macd: [12, 26, 9]
+  macd_cross_lookback_days: 3
+  atr_period: 14
+  volume_avg_days: 20
+  volume_spike_ratio: 2.0
+  breakout_lookbacks: [20, 55]
+  breakout_min_volume_ratio: 1.5
+  delivery_avg_days: 20
+  delivery_min_pct: 50.0
+  delivery_vs_avg_ratio: 1.2
+  rs_lookbacks: [63, 126]      # ~3 and ~6 months of trading days
+  cross_lookback_days: 10      # golden/death cross must be this recent
+  pivot_window: 5              # bars on each side for a swing high/low
+  sr_lookback_days: 250
+  sr_cluster_atr: 0.5          # pivots within this many ATRs merge into one level
+  sr_near_atr: 1.0             # "near" support/resistance = within this many ATRs
+  min_history_days: 210        # skip stocks with less history than this
+  min_avg_turnover_cr: 1.0     # skip illiquid stocks (20-day avg turnover, ₹ crore)
