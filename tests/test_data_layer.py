@@ -182,3 +182,39 @@ def test_yahoo_filled_days_are_upgraded_to_nse_when_it_comes_back(settings):
     pipe.src["nse_udiff"] = FakeSrc("ok", "nse_udiff")
     pipe.update(date(2026, 1, 5), date(2026, 1, 9))
     assert set(st.raw_prices()["source"]) == {"nse_udiff"}
+
+
+class StaleFileSrc(FakeSrc):
+    """Mimics NSE serving the previous trading day's file under a holiday's date."""
+
+    def fetch_day(self, d):
+        self.calls += 1
+        return px_rows(pd.Timestamp(d) - pd.tseries.offsets.BDay(1), source=self.name)
+
+
+def test_file_for_a_different_day_is_not_stored_and_day_becomes_holiday(settings):
+    pipe, st = _pipe(settings, FakeSrc("notfound", "nse_udiff"), StaleFileSrc("ok", "nse_full_bhav"))
+    pipe.src["yahoo"].fetch_range = lambda *a: (finish(pd.DataFrame(), PRICE_COLS),
+                                               pd.DataFrame(columns=["symbol", "ex_date", "factor", "source"]))
+    rep = pipe.update(date(2026, 11, 24), date(2026, 11, 24))
+    assert rep.prices[date(2026, 11, 24)] == "holiday"
+    assert st.raw_prices().empty
+    msg = st.q("SELECT message FROM fetch_log WHERE source='nse_full_bhav'")["message"].iloc[0]
+    assert "2026-11-23" in msg
+
+
+def test_index_days_from_yahoo_are_upgraded_to_nse(settings):
+    pipe, st = _pipe(settings, FakeSrc("ok", "nse_udiff"), FakeSrc("ok", "nse_full_bhav"))
+    st.upsert_index(pd.DataFrame({"date": [date(2026, 1, 5)], "index_name": ["Nifty 500"], "open": [1.0],
+                                  "high": [1.0], "low": [1.0], "close": [1.0], "source": ["yahoo"]}))
+
+    class Ix:
+        calls = 0
+
+        def fetch_day(self, d):
+            Ix.calls += 1
+            return pd.DataFrame({"date": [d], "index_name": ["Nifty 500"], "open": [2.0], "high": [2.0],
+                                 "low": [2.0], "close": [2.0], "source": ["nse_index_close"]})
+    pipe.src["nse_index_close"] = Ix()
+    pipe.update(date(2026, 1, 5), date(2026, 1, 5))
+    assert st.index_prices("Nifty 500")["source"].tolist() == ["nse_index_close"]
