@@ -26,6 +26,17 @@ def _num(x):
     return None if np.isnan(x) else round(x, 4)
 
 
+def _setups_today(d: pd.DataFrame, cfg: dict) -> list[str]:
+    """Backtested setups (see backtest/setups.py) that fire on the latest bar."""
+    from ..backtest.setups import setup_signals
+    try:
+        sig = setup_signals(d, cfg)
+    except Exception:  # noqa: BLE001 - missing columns on very short histories
+        return []
+    last = sig.iloc[-1]
+    return [k for k, v in last.items() if bool(v)]
+
+
 def analyse_symbol(px: pd.DataFrame, cfg: dict, bench: pd.Series | None) -> tuple[pd.DataFrame, dict]:
     """Indicators + signals for one stock. Returns (indicator frame, summary dict)."""
     d = add_indicators(px.sort_values("date"), cfg, bench)
@@ -58,6 +69,7 @@ def analyse_symbol(px: pd.DataFrame, cfg: dict, bench: pd.Series | None) -> tupl
         "n_bullish": sum(s.side == "bullish" for s in signals),
         "n_bearish": sum(s.side == "bearish" for s in signals),
         "source": last.get("source"),
+        "setups_today": _setups_today(d, cfg),
     }
     return d, summary
 

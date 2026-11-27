@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS scan_results (
     run_date DATE, symbol VARCHAR, data JSON, PRIMARY KEY (run_date, symbol)
 );
 CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR);
+CREATE TABLE IF NOT EXISTS bt_runs (run_id VARCHAR PRIMARY KEY, created TIMESTAMP, meta JSON);
 """
 
 SOURCE_RANK = {"nse_udiff": 0, "nse_legacy": 1, "nse_full_bhav": 2, "nse_index_close": 0,
@@ -130,6 +131,53 @@ class Store:
             "data": [json.dumps(r, default=str) for r in results.to_dict("records")],
         })
         return self._upsert("scan_results", rows)
+
+    # ------------------------------------------------------------ backtests
+    def save_backtest(self, run_id: str, trades: pd.DataFrame, grid: pd.DataFrame, meta: dict,
+                      keep_runs: int = 5) -> None:
+        """Store one backtest run. Trade and grid tables are created from the frames'
+        columns on first use; older runs beyond `keep_runs` are deleted."""
+        self.con.execute("INSERT OR REPLACE INTO bt_runs VALUES (?, ?, ?)",
+                         [run_id, pd.Timestamp.now().to_pydatetime(), json.dumps(meta, default=str)])
+        for table, df in (("bt_trades", trades), ("bt_grid", grid)):
+            if df is None or df.empty:
+                continue
+            df = df.assign(run_id=run_id)
+            self.con.register("_bt", df)
+            try:
+                exists = self.con.execute(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_name = ?", [table]).fetchone()[0]
+                if not exists:
+                    self.con.execute(f"CREATE TABLE {table} AS SELECT * FROM _bt")
+                else:
+                    self.con.execute(f"DELETE FROM {table} WHERE run_id = ?", [run_id])
+                    self.con.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _bt")
+            finally:
+                self.con.unregister("_bt")
+        old = self.q("SELECT run_id FROM bt_runs ORDER BY created DESC")["run_id"].tolist()[keep_runs:]
+        for rid in old:
+            self.con.execute("DELETE FROM bt_runs WHERE run_id = ?", [rid])
+            for table in ("bt_trades", "bt_grid"):
+                if self._has_table(table):
+                    self.con.execute(f"DELETE FROM {table} WHERE run_id = ?", [rid])
+
+    def _has_table(self, name: str) -> bool:
+        return bool(self.con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = ?",
+                                     [name]).fetchone()[0])
+
+    def backtest_runs(self) -> pd.DataFrame:
+        if not self._has_table("bt_runs"):
+            return pd.DataFrame(columns=["run_id", "created", "meta"])
+        return self.q("SELECT * FROM bt_runs ORDER BY created DESC")
+
+    def load_backtest(self, run_id: str) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+        r = self.con.execute("SELECT meta FROM bt_runs WHERE run_id = ?", [run_id]).fetchone()
+        meta = json.loads(r[0]) if r else {}
+        trades = self.q("SELECT * FROM bt_trades WHERE run_id = ?", [run_id]) if self._has_table("bt_trades") \
+            else pd.DataFrame()
+        grid = self.q("SELECT * FROM bt_grid WHERE run_id = ?", [run_id]) if self._has_table("bt_grid") \
+            else pd.DataFrame()
+        return trades, grid, meta
 
     def set_meta(self, key: str, value: str) -> None:
         self.con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", [key, value])

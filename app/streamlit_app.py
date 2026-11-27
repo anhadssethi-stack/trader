@@ -15,6 +15,9 @@ from plotly.subplots import make_subplots
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from nse_research.backtest.setups import SETUP_BY_ID  # noqa: E402
+from nse_research.backtest.stats import (portfolio_curve, probability_sentence, setup_summary_table,  # noqa: E402
+                                         summarize, walk_forward, warnings_for, wilson, yearly, oos_split)
 from nse_research.data.store import Store  # noqa: E402
 from nse_research.indicators.levels import find_levels  # noqa: E402
 from nse_research.scanner.engine import analyse_symbol  # noqa: E402
@@ -182,6 +185,21 @@ def show_reasons(row):
                 st.markdown(f"- **{s['label']}**: {s['reason']}")
     if not sigs:
         st.write("No rule fired for this stock today.")
+    setups = row.get("setups_today") or []
+    if isinstance(setups, list) and setups:
+        st.markdown("**Backtested setups that fired today**")
+        tab = load_bt_summary()
+        for sid in setups:
+            su = SETUP_BY_ID.get(sid)
+            name = su.name if su else sid
+            if su and su.side == "short" and not row.get("short_possible", False):
+                st.markdown(f"- **{name}**: short setup, but this stock is not in F&O, so it can't be shorted for a swing hold.")
+                continue
+            hit = tab[tab["setup"] == sid] if tab is not None and not tab.empty else None
+            if hit is None or hit.empty:
+                st.markdown(f"- **{name}**: no backtest yet (run `python -m nse_research.cli backtest`).")
+            else:
+                st.markdown(f"- **{name}**: " + probability_sentence(hit.iloc[0], S["backtest"]["target_r"], S["backtest"]))
     if row.get("n_bearish", 0) and not row.get("short_possible", False):
         st.caption("Bearish signals here can't be used as a multi-day short: the stock is not in F&O "
                    "(cash-market shorts must be squared off the same day). Treat them as exit/avoid.")
@@ -288,6 +306,149 @@ def page_health(_ov):
     st.dataframe(h["ca"], hide_index=True, use_container_width=True)
 
 
+@st.cache_data(ttl=600)
+def load_bt_runs():
+    r = _with_store(lambda s: s.backtest_runs())
+    return r if r is not None else pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def load_bt(run_id: str):
+    return _with_store(lambda s: s.load_backtest(run_id))
+
+
+@st.cache_data(ttl=600)
+def load_bt_summary(run_id: str | None = None):
+    runs = load_bt_runs()
+    if runs.empty:
+        return None
+    run_id = run_id or runs["run_id"].iloc[0]
+    trades, grid, _ = load_bt(run_id)
+    return setup_summary_table(trades, grid, S) if not trades.empty else None
+
+
+def _pct(x, nd=1):
+    return "n/a" if x is None or x != x else f"{x:.{nd}f}%"
+
+
+def _num(x, nd=2):
+    return "n/a" if x is None or x != x else f"{x:.{nd}f}"
+
+
+def page_backtest(_ov):
+    st.header("Backtest")
+    runs = load_bt_runs()
+    if runs.empty:
+        st.info("No backtest yet. Run `python -m nse_research.cli backtest` (a few minutes), then press Reload data.")
+        return
+    run_id = st.selectbox("Run", runs["run_id"].tolist(), index=0)
+    trades, grid, meta = load_bt(run_id)
+    tab = load_bt_summary(run_id)
+    bt = S["backtest"]
+    p = meta.get("params", bt)
+    st.caption(
+        f"Data {meta.get('data_first')} to {meta.get('data_last')}, {meta.get('symbols_tested')} symbols. "
+        f"Entry next day's open; stop {p['stop_atr']}× ATR; target {p['target_r']}R; time exit after "
+        f"{p['max_hold_days']} days; slippage {p['slippage_bps']} bps each side; all Indian costs included. "
+        f"Longs = cash delivery, shorts = stock futures on F&O stocks only. "
+        f"Only stocks with ≥ ₹{p['min_avg_turnover_cr']} cr average daily turnover *on the signal day*.")
+    with st.expander("How to read this"):
+        st.markdown(
+            "- **Win rate** is net of costs, with its 95% range. A wide range means few trades.\n"
+            "- **Expectancy** is the average result per trade in R (1R = the amount risked). "
+            "+0.2R means you made 0.2× your risk per trade on average.\n"
+            "- **Max drawdown** replays the trades as one account with your capital, risk and 10% cap "
+            "(at most 10 positions at once). It is the worst fall from a peak.\n"
+            "- **Out-of-sample** = the last 30% of the period. **Walk-forward** = each year, stop and target "
+            "were chosen from the previous 3 years only, then tested on that year.\n"
+            "- Fewer than 30 trades is labelled **LOW** confidence. These are historical frequencies, not "
+            "predictions.")
+    if tab is None or tab.empty:
+        st.warning("This run produced no trades.")
+        return
+    side = st.radio("Side", ["All", "Long", "Short"], horizontal=True)
+    t2 = tab if side == "All" else tab[tab["side"] == side.lower()]
+    view = pd.DataFrame({
+        "Setup": t2["name"], "Side": t2["side"], "Trades": t2["trades"],
+        "Win rate": t2["win_rate"], "95% range": t2.apply(lambda r: f"{r.win_ci_low:.0f}–{r.win_ci_high:.0f}%", axis=1),
+        "Expectancy (R)": t2["expectancy_r"], "Expectancy %": t2["expectancy_pct"],
+        "Avg win %": t2["avg_win_pct"], "Avg loss %": t2["avg_loss_pct"],
+        "Profit factor": t2["profit_factor"], "Max DD %": t2["max_dd_pct"],
+        f"Hit {p['target_r']}R before stop": t2["target_before_stop_pct"],
+        "Out-of-sample (R)": t2["oos_expectancy_r"], "Walk-forward (R)": t2["wf_expectancy_r"],
+        "Confidence": t2["confidence"],
+    })
+    st.dataframe(view, hide_index=True, use_container_width=True, column_config={
+        c: st.column_config.NumberColumn(format="%.2f") for c in
+        ["Expectancy (R)", "Expectancy %", "Avg win %", "Avg loss %", "Profit factor", "Out-of-sample (R)",
+         "Walk-forward (R)"]} | {c: st.column_config.NumberColumn(format="%.1f") for c in
+                                 ["Win rate", "Max DD %", f"Hit {p['target_r']}R before stop"]})
+
+    st.subheader("Setup detail")
+    names = dict(zip(t2["name"], t2["setup"]))
+    pick = st.selectbox("Setup", list(names), index=0)
+    sid = names[pick]
+    row = t2[t2["setup"] == sid].iloc[0]
+    su = SETUP_BY_ID.get(sid)
+    st.markdown(f"**Rule:** {su.logic if su else sid}")
+    st.info(probability_sentence(row, p["target_r"], bt))
+    for w in warnings_for(row, bt):
+        st.warning(w)
+    tr = trades[trades["setup"] == sid]
+    m = st.columns(6)
+    m[0].metric("Trades", f"{row.trades:,}")
+    m[1].metric("Win rate", _pct(row.win_rate), f"range {row.win_ci_low:.0f}–{row.win_ci_high:.0f}%", delta_color="off")
+    m[2].metric("Expectancy", f"{row.expectancy_r:+.2f}R", f"{row.expectancy_pct:+.2f}% per trade", delta_color="off")
+    m[3].metric("Profit factor", _num(row.profit_factor))
+    m[4].metric("Max drawdown", _pct(row.max_dd_pct), "your account settings", delta_color="off")
+    m[5].metric("Avg holding", f"{row.avg_bars:.0f} days")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Reached nR before the stop** (target ignored)")
+        lv = []
+        for r in p.get("r_levels", [1, 2, 3]):
+            k = f"hit_{r}r_pct"
+            if k in row and row[k] == row[k]:
+                lo, hi = row[f"hit_{r}r_ci"]
+                lv.append({"Level": f"{r}R", "Reached first": f"{row[k]:.0f}%", "95% range": f"{lo:.0f}–{hi:.0f}%"})
+        st.dataframe(pd.DataFrame(lv), hide_index=True)
+        st.markdown("**How trades ended**")
+        st.dataframe(pd.DataFrame([row.exits]).T.rename(columns={0: "trades"}), use_container_width=True)
+    with c2:
+        st.markdown("**In-sample vs out-of-sample**")
+        st.dataframe(pd.DataFrame([
+            {"Period": "In-sample", "Trades": row.is_trades, "Win rate": _pct(row.is_win_rate),
+             "Expectancy": f"{row.is_expectancy_r:+.2f}R" if row.is_expectancy_r == row.is_expectancy_r else "n/a"},
+            {"Period": f"Out-of-sample (from {row.oos_from})", "Trades": row.oos_trades,
+             "Win rate": _pct(row.oos_win_rate),
+             "Expectancy": f"{row.oos_expectancy_r:+.2f}R" if row.oos_expectancy_r == row.oos_expectancy_r else "n/a"},
+            {"Period": "Walk-forward (all test years)", "Trades": row.wf_trades, "Win rate": _pct(row.wf_win_rate),
+             "Expectancy": f"{row.wf_expectancy_r:+.2f}R" if row.wf_expectancy_r == row.wf_expectancy_r else "n/a"},
+        ]), hide_index=True)
+        st.caption(f"Costs average {row.costs_per_trade_pct:.2f}% of position value per round trip "
+                   f"({row.costs_per_trade_r:.2f}R).")
+
+    curve, pf = portfolio_curve(tr, S)
+    if not curve.empty:
+        st.markdown(f"**Account replay**: ₹{S['profile']['capital']:,.0f} start, {pf['slots']} positions max, "
+                    f"{pf['taken']} trades taken, {pf['skipped']} skipped because all slots were full.")
+        st.line_chart(curve.set_index("date")["equity"])
+    yr = yearly(tr)
+    if not yr.empty:
+        st.markdown("**By year** (entry year)")
+        st.bar_chart(yr.set_index("year")["total_r"])
+        st.dataframe(yr.round(2), hide_index=True)
+    wf_tab, _ = walk_forward(grid[grid["setup"] == sid] if not grid.empty else grid, bt["walk_forward"])
+    if not wf_tab.empty:
+        st.markdown("**Walk-forward**: stop/target chosen each year from the previous years only")
+        st.dataframe(wf_tab.round(2), hide_index=True)
+    with st.expander(f"All {len(tr)} trades"):
+        show = tr.drop(columns=[c for c in ("run_id",) if c in tr]).sort_values("entry_date", ascending=False)
+        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.download_button("Download trades CSV", show.to_csv(index=False), f"{sid}_trades.csv", "text/csv")
+
+
 def page_settings(_ov):
     st.header("Settings in use")
     st.caption("Edit config/settings.yaml (or create config/settings.local.yaml) and restart the app.")
@@ -300,7 +461,8 @@ def page_settings(_ov):
     st.json(dict(S), expanded=False)
 
 
-PAGES = {"Scanner": page_scanner, "Stock chart": page_chart, "Data health": page_health, "Settings": page_settings}
+PAGES = {"Scanner": page_scanner, "Stock chart": page_chart, "Backtest": page_backtest,
+         "Data health": page_health, "Settings": page_settings}
 
 if "nav_to" in st.session_state:  # must be set before the radio widget is drawn
     st.session_state["page"] = st.session_state.pop("nav_to")
@@ -314,7 +476,7 @@ with st.sidebar:
     if st.button("Reload data"):
         st.cache_data.clear()
         st.rerun()
-    st.caption("Phase 1 · technical scanner")
+    st.caption("Phase 2 · scanner + backtest")
 
 header(ov)
 if ov is None:

@@ -7,6 +7,7 @@
   python -m nse_research.cli scan                 # run the technical scanner
   python -m nse_research.cli daily                # update + scan (what the scheduler runs)
   python -m nse_research.cli health               # what was fetched, from where, what failed
+  python -m nse_research.cli backtest             # backtest every setup over all stored history
   python -m nse_research.cli demo                 # build a synthetic demo database
 """
 from __future__ import annotations
@@ -41,11 +42,31 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("daily")
     sub.add_parser("health")
     sub.add_parser("demo")
+    btp = sub.add_parser("backtest")
+    btp.add_argument("--setups", nargs="*", help="setup ids (default: all)")
+    btp.add_argument("--symbols", nargs="*", help="limit to these symbols (for a quick test)")
     a = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     s = load_settings(a.settings)
+
+    if a.cmd == "backtest":
+        from .backtest.engine import run_backtest
+        from .backtest.stats import setup_summary_table
+        st = _store(s, a.db)
+        trades, grid, meta = run_backtest(s, st, a.setups, a.symbols)
+        run_id = date.today().isoformat() + "_" + str(int(__import__("time").time()))
+        st.save_backtest(run_id, trades, grid, meta)
+        tab = setup_summary_table(trades, grid, s)
+        if tab.empty:
+            print("No trades. Is there price history stored? (see README)")
+            return 0
+        cols = ["setup", "trades", "win_rate", "win_ci_low", "win_ci_high", "expectancy_r", "profit_factor",
+                "max_dd_pct", "oos_expectancy_r", "wf_expectancy_r", "confidence"]
+        print(tab[cols].round(2).to_string(index=False))
+        print(f"\nSaved as run {run_id}. Open the Backtest page in the dashboard for details.")
+        return 0
 
     if a.cmd == "demo":
         from .demo import build_demo
