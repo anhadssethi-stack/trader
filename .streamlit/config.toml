@@ -5,3 +5,5 @@ gatherUsageStats = false
 
 [server]
 headless = true
+# Only reachable from this Mac, not from other devices on the same Wi-Fi or the internet.
+address = "localhost"
