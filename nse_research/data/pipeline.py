@@ -73,7 +73,8 @@ class Pipeline:
             sources = {
                 "nse_udiff": NseUdiffBhavcopy(self.http), "nse_legacy": NseLegacyBhavcopy(self.http),
                 "nse_full_bhav": full, "nse_mto": NseMto(self.http),
-                "nse_index_close": NseIndexClose(self.http), "yahoo": YahooSource(),
+                "nse_index_close": NseIndexClose(self.http),
+                "yahoo": YahooSource(cache_dir=settings.path("cache_dir")),
                 "lists": NseLists(self.http),
             }
         self.src = sources
