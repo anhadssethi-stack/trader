@@ -149,7 +149,7 @@ def page_scanner(ov):
     })
     st.write(f"**{len(view)}** stocks match.")
     st.dataframe(
-        view, hide_index=True, use_container_width=True, height=520,
+        view, hide_index=True, width="stretch", height=520,
         column_config={
             "Close": st.column_config.NumberColumn(format="%.2f"),
             "Chg %": st.column_config.NumberColumn(format="%.2f"),
@@ -265,7 +265,7 @@ def page_chart(ov):
     fig.update_layout(height=820, xaxis_rangeslider_visible=False, margin=dict(l=10, r=60, t=10, b=10),
                       legend=dict(orientation="h", y=1.02))
     fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     st.subheader("Signals today and why")
     show_reasons(pd.Series({**summ, "short_possible": meta["short_possible"] if meta is not None else False}))
@@ -296,14 +296,14 @@ def page_health(_ov):
     c2.dataframe(h["uni"], hide_index=True)
     c2.dataframe(h["fno"].assign(list="F&O"), hide_index=True)
     st.subheader("Fetch attempts")
-    st.dataframe(h["summary"], hide_index=True, use_container_width=True)
+    st.dataframe(h["summary"], hide_index=True, width="stretch")
     st.subheader("Recent problems")
     if h["problems"].empty:
         st.success("No errors logged.")
     else:
-        st.dataframe(h["problems"], hide_index=True, use_container_width=True)
+        st.dataframe(h["problems"], hide_index=True, width="stretch")
     st.subheader("Detected corporate actions (latest 200)")
-    st.dataframe(h["ca"], hide_index=True, use_container_width=True)
+    st.dataframe(h["ca"], hide_index=True, width="stretch")
 
 
 @st.cache_data(ttl=600)
@@ -378,7 +378,7 @@ def page_backtest(_ov):
         "Out-of-sample (R)": t2["oos_expectancy_r"], "Walk-forward (R)": t2["wf_expectancy_r"],
         "Confidence": t2["confidence"],
     })
-    st.dataframe(view, hide_index=True, use_container_width=True, column_config={
+    st.dataframe(view, hide_index=True, width="stretch", column_config={
         c: st.column_config.NumberColumn(format="%.2f") for c in
         ["Expectancy (R)", "Expectancy %", "Avg win %", "Avg loss %", "Profit factor", "Out-of-sample (R)",
          "Walk-forward (R)"]} | {c: st.column_config.NumberColumn(format="%.1f") for c in
@@ -414,7 +414,7 @@ def page_backtest(_ov):
                 lv.append({"Level": f"{r}R", "Reached first": f"{row[k]:.0f}%", "95% range": f"{lo:.0f}–{hi:.0f}%"})
         st.dataframe(pd.DataFrame(lv), hide_index=True)
         st.markdown("**How trades ended**")
-        st.dataframe(pd.DataFrame([row.exits]).T.rename(columns={0: "trades"}), use_container_width=True)
+        st.dataframe(pd.DataFrame([row.exits]).T.rename(columns={0: "trades"}), width="stretch")
     with c2:
         st.markdown("**In-sample vs out-of-sample**")
         st.dataframe(pd.DataFrame([
@@ -445,7 +445,7 @@ def page_backtest(_ov):
         st.dataframe(wf_tab.round(2), hide_index=True)
     with st.expander(f"All {len(tr)} trades"):
         show = tr.drop(columns=[c for c in ("run_id",) if c in tr]).sort_values("entry_date", ascending=False)
-        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.dataframe(show, hide_index=True, width="stretch")
         st.download_button("Download trades CSV", show.to_csv(index=False), f"{sid}_trades.csv", "text/csv")
 
 

@@ -157,7 +157,17 @@ with a reason, and add it to `RULES`.
 
 ## 4b. Backtest (Phase 2)
 
-Run it after `daily` (or `backfill-fast`) has stored history:
+Run it after `daily` (or `backfill-fast`) has stored history. If the dashboard is running, press
+**Ctrl+C** in its terminal first (or use a second terminal), because commands typed into the
+dashboard's terminal don't run:
+
+```bash
+cd ~/trader && source .venv/bin/activate
+git fetch && git checkout phase2-backtest && git pull
+pip install -r requirements.txt
+```
+
+Then:
 
 ```bash
 python -m nse_research.cli backtest                       # all setups, all stored history (a few minutes)

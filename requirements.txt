@@ -4,6 +4,6 @@ duckdb>=1.1
 requests>=2.31
 PyYAML>=6.0
 yfinance>=0.2.50
-streamlit>=1.38
+streamlit>=1.50
 plotly>=5.22
 pytest>=8.0
