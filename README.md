@@ -8,8 +8,8 @@ Built in phases, and each phase is confirmed before the next one starts:
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Data layer, technical scanner on Nifty 500, dashboard | **this release** |
-| 2 | Backtest engine and win-rate statistics | not started |
+| 1 | Data layer, technical scanner on Nifty 500, dashboard | done |
+| 2 | Backtest engine and win-rate statistics | **this release** |
 | 3 | Fundamentals and smart-money tracker | not started |
 | 4 | Sector rotation, trade plans, position sizing | not started |
 | 5 | Automation, alerts, forward scenarios | not started |
@@ -155,6 +155,126 @@ of skipped stocks is shown.
 To add a rule, write a function in `nse_research/scanner/rules.py` that returns a `Signal`
 with a reason, and add it to `RULES`.
 
+## 4b. Backtest (Phase 2)
+
+Run it after `daily` (or `backfill-fast`) has stored history. If the dashboard is running, press
+**Ctrl+C** in its terminal first (or use a second terminal), because commands typed into the
+dashboard's terminal don't run:
+
+```bash
+cd ~/trader && source .venv/bin/activate
+git fetch && git checkout phase2-backtest && git pull
+pip install -r requirements.txt
+```
+
+Then:
+
+```bash
+python -m nse_research.cli backtest                       # all setups, all stored history (a few minutes)
+python -m nse_research.cli backtest --setups L_golden_cross S_death_cross
+python -m nse_research.cli backtest --symbols RELIANCE TCS   # quick check
+```
+
+It prints a summary table and saves the run (the last 5 runs are kept). Open the **Backtest**
+page in the dashboard for the detail of each setup. The Scanner's reasons panel also shows
+which backtested setups fired on today's bar, with their historical record.
+
+### Setups tested
+
+| id | Rule |
+|---|---|
+| L_breakout_long | Close above the prior 55-day high, on volume ≥ 1.5× its 20-day average |
+| L_breakout_short | Close above the prior 20-day high, on volume ≥ 1.5× its 20-day average |
+| L_breakout_rs | 20-day breakout on volume, and beating the Nifty 500 over 63 and 126 days |
+| L_trend_start | Close > 20 > 50 > 200 DMA for the first time |
+| L_golden_cross | 50 DMA crosses above the 200 DMA |
+| L_macd_uptrend | MACD crosses above its signal line, close above the 200 DMA |
+| L_rsi_50_uptrend | RSI crosses above 50, close above the 200 DMA |
+| L_volume_up | Volume ≥ 2× average on an up day, close above the 50 DMA |
+| L_delivery_up | Delivery ≥ 50% and ≥ 1.2× its average on an up day, close above the 50 DMA |
+| S_breakdown_long / S_breakdown_short | Mirror of the breakouts (55 / 20-day low), shorts |
+| S_trend_start | Close < 20 < 50 < 200 DMA for the first time, short |
+| S_death_cross | 50 DMA crosses below the 200 DMA, short |
+| S_macd_downtrend | MACD crosses below its signal line, close below the 200 DMA, short |
+| S_volume_down | Volume ≥ 2× average on a down day, close below the 50 DMA, short |
+
+Shorts are only taken on F&O stocks (multi-day shorts need futures). `L_delivery_up` needs
+delivery % history, which only NSE files have, so it shows 0 trades until you run the NSE backfill.
+
+**Which stocks are tested** (`backtest.universe`):
+
+- `top_turnover` (default): on each signal day, only the `top_n` (500) most-traded stocks *that
+  day* by 20-day average turnover. This is a point-in-time stand-in for "the Nifty 500 back
+  then": it includes stocks that later fell out or were delisted (no survivorship bias), but
+  not the thousands of small stocks the full NSE backfill also stores. The run log says how
+  many stocks were ever in the top 500 (typically 1,000+ over ten years).
+- `all_stored`: every stored stock that passes the liquidity filter (₹5 cr/day on the signal day).
+- `current`: today's universe only (has survivorship bias).
+
+Run `python -m nse_research.cli check-data` after a backfill. It lists one-day moves above 25% in
+split-adjusted prices (usually a split or bonus that wasn't detected) and the backtest trades
+that lost more than 2R, so a data problem can't hide inside the results. To add a setup, add a
+function and a `Setup(...)` entry in `nse_research/backtest/setups.py`.
+
+### How each trade is simulated
+
+All numbers below are in `config/settings.yaml` under `backtest:` and `costs:`.
+
+- **Signal** on the close of day *t*. **Entry** at the open of day *t+1*, plus slippage
+  (10 bps each side).
+- **Stop** = entry ∓ 2 × ATR(14) of the signal day. **Target** = entry ± 2R, where R is the
+  distance to the stop.
+- Each day: if the open gaps through the stop or target, the trade fills **at the open**
+  (so gaps can make a loss bigger than 1R). If the same bar touches both stop and target,
+  the **stop is assumed first** (conservative). Otherwise the stop or target price fills.
+- **Time exit** at the close after 60 trading days. If the stock stops trading (delisted,
+  suspended) the trade closes at its last close (`data_end`). Trades still running today are
+  shown as `open` and left out of the statistics.
+- **Size** from your profile: risk 2% of capital per trade, capped at 10% of capital per stock.
+- **Costs** per trade: brokerage (0.03%, max ₹20 per order), STT, exchange charges, SEBI fee,
+  stamp duty, GST and DP charges. Longs use cash-delivery rates; shorts use stock-futures rates.
+- **Liquidity** is checked as of the signal day (average turnover ≥ ₹5 cr, price ≥ ₹20), not
+  today, so a stock that was illiquid back then is excluded back then.
+- One open trade per stock per setup at a time.
+
+### Statistics shown
+
+- **Win rate** = net-profitable trades / closed trades, with a 95% **Wilson** confidence range.
+- **Expectancy** in R and in %, average win and loss, **profit factor** (gross wins / gross losses).
+- **"Hit nR before stop"**: "this setup historically hit 2R before its stop X% of the time
+  over N trades", for 1R, 2R and 3R. It is a historical frequency, never "X% chance".
+- **Confidence label**: fewer than 30 trades = **LOW** (treat as anecdote), 30–99 = moderate,
+  100+ = higher. Small samples are flagged everywhere they appear.
+- **Max drawdown**: trades are replayed through a ₹50 lakh account with 10 position slots
+  (signals that arrive while all slots are full are skipped), and the peak-to-trough fall of
+  that equity curve is reported. If losses use up all the capital, the replay stops there and the
+  drawdown shows 100%.
+- **Out-of-sample**: the last 30% of trades by entry date are reported separately. A setup
+  whose edge disappears out-of-sample is probably curve-fit.
+- **Walk-forward**: for each year, the stop/target pair (from a 3 × 3 grid of 1.5/2/3 ATR ×
+  1.5/2/3 R) that worked best over the previous 3 years is picked, then tested on that year
+  only. Only trades that had closed before the year began are used for picking.
+  Out-of-sample and walk-forward cover **different years** (walk-forward starts once 3 years
+  of history exist, out-of-sample is only the last 30%), so they can disagree. The column
+  `wf_fixed_expectancy_r` ("Same years, fixed stop/target") shows the default 2 ATR / 2R over the
+  walk-forward years: if walk-forward is much better than that, the gain came from re-picking
+  the stop and target (usually the wider 3 ATR stop); if they are close, those years were simply better.
+- Results by year, by exit reason, and the full trade list (CSV download).
+
+### Caveats you should read
+
+- **Survivorship bias.** `backfill-fast` only fetches today's Nifty 500 from Yahoo, so stocks
+  that fell out or were delisted are missing and results look better than reality. Running
+  `python -m nse_research.cli update --since 2016-01-01` (slow, resumable) stores every NSE
+  stock for every day, including later-delisted ones; the backtest then uses all of them. The
+  Backtest page shows what share of trades came from Yahoo data and from stocks no longer in
+  the universe.
+- **Historical index membership** isn't available free, so the universe is "every stock that
+  was liquid at the time", not "the Nifty 500 at the time".
+- **Shorts** assume you could hold a futures position through rollovers at no extra cost;
+  in reality, rollover spreads, lot sizes and ban periods add friction.
+- Past frequencies don't guarantee future ones, especially across market regimes.
+
 ---
 
 ## 5. Project layout
@@ -175,7 +295,11 @@ nse_research/
   scanner/engine.py           runs rules over the universe
   cli.py                      command line
   demo.py                     synthetic demo database
-app/streamlit_app.py          dashboard: Scanner, Stock chart, Data health, Settings
+  backtest/setups.py          the backtested setups (entry rules)
+  backtest/engine.py          trade simulator, sizing, costs applied per trade
+  backtest/costs.py           Indian brokerage, STT, exchange, SEBI, stamp, GST, DP
+  backtest/stats.py           win rate + CI, expectancy, drawdown, out-of-sample, walk-forward
+app/streamlit_app.py          dashboard: Scanner, Stock chart, Backtest, Data health, Settings
 scripts/                      daily run + macOS launchd installer
 tests/                        pytest suite
 ```
@@ -185,12 +309,11 @@ Neither is committed to git. The app stores **every** NSE equity each day, not j
 so switching to `universe.mode: all_nse` needs no new downloads, and stocks that later get
 delisted stay in the history (useful against survivorship bias in Phase 2).
 
-## 6. Known limitations (Phase 1)
+## 6. Known limitations
 
 - **Symbol renames** (e.g. after a merger or name change) split one company's history into two
-  symbols. Phase 2 will add ISIN-based stitching.
-- **Historical index membership** isn't available for free. Backtests on "today's Nifty 500"
-  overstate results, and Phase 2 will measure and flag this.
+  symbols. ISIN-based stitching is still to do.
+- **Historical index membership** isn't available for free (see the backtest caveats above).
 - The NSE parsers were written against NSE's published layouts and tested on sample files.
   The first real download is the real test: if NSE has changed something, the Data health
   page will show which file failed, and Yahoo fills in meanwhile.
@@ -204,3 +327,13 @@ delisted stay in the history (useful against survivorship bias in Phase 2).
    `nse_udiff` with delivery from `nse_full_bhav`, and the benchmark covering about 10 years.
 4. The **Scanner** lists stocks with reasons, and the **Stock chart** for a stock you know
    matches your broker's chart (allowing for split adjustment).
+
+## 8. Checking that Phase 2 works
+
+1. `python -m pytest -q` passes (61 tests, 25 of them for the backtester).
+2. `python -m nse_research.cli backtest --symbols RELIANCE TCS INFY` finishes in seconds and
+   prints a table.
+3. A full `python -m nse_research.cli backtest` finishes in a few minutes and the **Backtest**
+   page shows every setup, with trades from about 10 years.
+4. Pick one trade from the trade list and check it on your broker's chart: entry at the next
+   day's open, and an exit at the stop, target or after 60 days.

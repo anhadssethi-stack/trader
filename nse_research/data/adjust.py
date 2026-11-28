@@ -26,6 +26,8 @@ def detect_corp_actions(raw: pd.DataFrame, min_change: float = 0.02,
     df["date"] = pd.to_datetime(df["date"])
     days = pd.DatetimeIndex(sorted(pd.to_datetime(market_days if market_days is not None
                                                   else df["date"].unique())))
+    if len(days) < 2:
+        return pd.DataFrame(columns=cols)
     prev_market = pd.Series(days[:-1], index=days[1:])
     g = df.groupby("symbol", sort=False)
     df["last_close"] = g["close"].shift(1)

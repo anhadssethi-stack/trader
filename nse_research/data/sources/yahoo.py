@@ -56,8 +56,28 @@ class YahooSource:
     name = "yahoo"
     kind = "price"
 
-    def __init__(self, batch_size: int = 50):
+    def __init__(self, batch_size: int = 50, cache_dir=None):
         self.batch_size = batch_size
+        self.cache_dir = cache_dir
+        self.missing: list[str] = []
+        self._configured = False
+
+    def _configure(self) -> None:
+        """Give yfinance its own cache folder (its default one often fails on macOS)
+        and quiet its per-symbol log spam; missing symbols are summarised by us instead."""
+        if self._configured:
+            return
+        import yfinance as yf
+        if self.cache_dir is not None:
+            from pathlib import Path
+            p = Path(self.cache_dir) / "yfinance"
+            p.mkdir(parents=True, exist_ok=True)
+            try:
+                yf.set_tz_cache_location(str(p))
+            except Exception:  # noqa: BLE001 - cache is optional
+                pass
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+        self._configured = True
 
     def supports(self, d: date) -> bool:
         return True
@@ -65,6 +85,7 @@ class YahooSource:
     def _download(self, tickers: list[str], start: date, end: date) -> pd.DataFrame:
         import yfinance as yf  # imported lazily: optional at test time
 
+        self._configure()
         return yf.download(
             tickers, start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
             auto_adjust=False, actions=True, group_by="ticker", threads=True, progress=False,
@@ -74,6 +95,7 @@ class YahooSource:
                     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Return (prices in PRICE_COLS, corp_actions[symbol, ex_date, factor, source])."""
         frames, actions = [], []
+        self.missing = []
         for i in range(0, len(symbols), self.batch_size):
             batch = symbols[i:i + self.batch_size]
             tick = [to_yahoo(s) for s in batch]
@@ -91,6 +113,7 @@ class YahooSource:
                     continue
                 sub = sub.dropna(subset=["Close"])
                 if sub.empty:
+                    self.missing.append(sym)
                     continue
                 sub, acts = unadjust_splits(sub)
                 actions += [(sym, d, f, "yahoo") for d, f in acts]
@@ -102,6 +125,9 @@ class YahooSource:
                     "turnover": (sub["Close"] * sub["Volume"]).values, "trades": np.nan,
                     "source": "yahoo",
                 }))
+        if self.missing:
+            log.info("Yahoo had no data for %d symbol(s) (renamed, new or delisted; NSE files cover them): %s",
+                     len(self.missing), ", ".join(sorted(set(self.missing))[:20]))
         prices = finish(pd.concat(frames), PRICE_COLS) if frames else finish(pd.DataFrame(), PRICE_COLS)
         ca = pd.DataFrame(actions, columns=["symbol", "ex_date", "factor", "source"])
         return prices, ca

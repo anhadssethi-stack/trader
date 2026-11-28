@@ -73,7 +73,8 @@ class Pipeline:
             sources = {
                 "nse_udiff": NseUdiffBhavcopy(self.http), "nse_legacy": NseLegacyBhavcopy(self.http),
                 "nse_full_bhav": full, "nse_mto": NseMto(self.http),
-                "nse_index_close": NseIndexClose(self.http), "yahoo": YahooSource(),
+                "nse_index_close": NseIndexClose(self.http),
+                "yahoo": YahooSource(cache_dir=settings.path("cache_dir")),
                 "lists": NseLists(self.http),
             }
         self.src = sources
@@ -141,6 +142,14 @@ class Pipeline:
                 all_not_found = False
                 self.store.log_fetch(d, dataset, name, "empty", 0)
                 continue
+            # NSE sometimes serves the previous day's file under a holiday's date. Never
+            # store rows under a date other than the one asked for: treat it as no file.
+            dates = set(pd.to_datetime(df["date"]).dt.date)
+            if dates != {d}:
+                got = ", ".join(str(x) for x in sorted(dates)[:3])
+                msgs.append(f"{name}: file is for {got}, not {d}")
+                self.store.log_fetch(d, dataset, name, "not_found", 0, f"file contains {got}, not {d}")
+                continue
             self.store.log_fetch(d, dataset, name, "ok", len(df))
             return df, name, ""
         return None, ("not_found" if all_not_found else "error"), "; ".join(msgs)
@@ -160,7 +169,7 @@ class Pipeline:
         self.refresh_lists()
         have_p = self.store.stored_days("prices", exclude_source="yahoo")
         have_d = self.store.stored_days("delivery")
-        have_i = self.store.stored_days("index")
+        have_i = self.store.stored_days("index", exclude_source="yahoo")
         holidays = self._known_holidays()
         days = [x for x in weekdays(start, end) if x not in holidays]
         rep = RunReport(days_requested=len(days))

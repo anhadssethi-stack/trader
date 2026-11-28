@@ -60,3 +60,47 @@ scanner:
   sr_near_atr: 1.0             # "near" support/resistance = within this many ATRs
   min_history_days: 210        # skip stocks with less history than this
   min_avg_turnover_cr: 1.0     # skip illiquid stocks (20-day avg turnover, ₹ crore)
+
+backtest:
+  universe: top_turnover        # top_turnover | all_stored | current (see README)
+  top_n: 500                    # top_turnover: only the N most-traded stocks *on the signal day*
+                                # (a point-in-time stand-in for "the Nifty 500 back then")
+  min_avg_turnover_cr: 5.0      # point-in-time liquidity: 20-day avg turnover on the signal day, ₹ crore
+  min_price: 20.0               # skip penny stocks (price on the signal day)
+  start_date: null              # null = all stored history
+  stop_atr: 2.0                 # stop = entry ∓ stop_atr × ATR(14) on the signal day
+  target_r: 2.0                 # target = entry ± target_r × (entry − stop)
+  max_hold_days: 60             # time exit at the close after this many trading days
+  slippage_bps: 10              # per side, against you (0.10%)
+  one_trade_per_symbol: true    # no new entry in a stock while the same setup's trade is still open
+  r_levels: [1, 2, 3]           # report "reached nR before the stop" for these
+  oos_fraction: 0.3             # last 30% of the period is held out as out-of-sample
+  min_trades_reliable: 30       # below this, results are labelled low confidence
+  min_trades_moderate: 100
+  walk_forward:
+    train_years: 3              # pick stop/target on the previous 3 years, test on the next year
+    stop_atr_grid: [1.5, 2.0, 3.0]
+    target_r_grid: [1.5, 2.0, 3.0]
+    min_train_trades: 20
+
+costs:                          # Indian rates as of 2025. Check against your broker's contract note.
+  delivery:                     # long trades (cash delivery)
+    brokerage_pct: 0.03         # per order; many discount brokers charge 0 for delivery
+    brokerage_cap: 20           # ₹ per order
+    stt_buy_pct: 0.1
+    stt_sell_pct: 0.1
+    exchange_pct: 0.00297       # NSE transaction charge
+    sebi_per_crore: 10
+    stamp_buy_pct: 0.015
+    gst_pct: 18
+    dp_per_sell: 15.93          # depository charge per scrip sold
+  futures:                      # short trades (stock futures)
+    brokerage_pct: 0.03
+    brokerage_cap: 20
+    stt_buy_pct: 0.0
+    stt_sell_pct: 0.02
+    exchange_pct: 0.00173
+    sebi_per_crore: 10
+    stamp_buy_pct: 0.002
+    gst_pct: 18
+    dp_per_sell: 0
