@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS bt_runs (run_id VARCHAR PRIMARY KEY, created TIMESTAM
 """
 
 SOURCE_RANK = {"nse_udiff": 0, "nse_legacy": 1, "nse_full_bhav": 2, "nse_index_close": 0,
-               "nse_mto": 3, "nse_prevclose": 0, "yahoo": 9, "demo": 5}
+               "nse_mto": 3, "nse_prevclose": 0, "yahoo": 9, "demo": 5,
+               "gap_inferred": 10}
 
 
 class Store:
@@ -133,6 +134,11 @@ class Store:
         return self._upsert("scan_results", rows)
 
     # ------------------------------------------------------------ backtests
+    def fund_symbols(self) -> set[str]:
+        """ETFs and other fund units (ISIN starts with INF), e.g. GOLDBEES, LIQUIDETF,
+        NIFTYBEES. They are not company shares, so stock setups don't apply to them."""
+        return set(self.q("SELECT DISTINCT symbol FROM prices WHERE isin LIKE 'INF%'")["symbol"])
+
     def save_backtest(self, run_id: str, trades: pd.DataFrame, grid: pd.DataFrame, meta: dict,
                       keep_runs: int = 5) -> None:
         """Store one backtest run. Trade and grid tables are created from the frames'

@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from ..settings import Settings
-from .adjust import detect_corp_actions
+from .adjust import detect_corp_actions, infer_gap_actions
 from .http import FetchError, HttpClient, NotFound
 from .sources.nse import (NseFullBhavcopy, NseIndexClose, NseLegacyBhavcopy, NseLists, NseMto,
                           NseUdiffBhavcopy)
@@ -277,10 +277,36 @@ class Pipeline:
         found = found[pd.to_datetime(found["ex_date"]) >= pd.Timestamp(since)]
         if not found.empty:
             self.store.upsert_corp_actions(found)
+        gaps = self.infer_gap_actions(since)
+        found = pd.concat([found, gaps], ignore_index=True) if not gaps.empty else found
+        if not found.empty:
             for r in found.itertuples():
                 self.store.log_fetch(r.ex_date, "corp_action", r.source, "ok", 1,
                                      f"{r.symbol} factor {r.factor}")
         return len(found)
+
+    def infer_gap_actions(self, since: date) -> pd.DataFrame:
+        """Store splits/bonuses NSE didn't flag (see adjust.infer_gap_actions)."""
+        series = self.s["universe"]["series"]
+        ph = ",".join("?" * len(series))
+        # previous stored day per symbol, computed in the database (whole history is large)
+        rows = self.store.q(f"""
+            WITH p AS (
+                SELECT symbol, date, open, close, prev_close,
+                       row_number() OVER (PARTITION BY symbol, date ORDER BY
+                           CASE series {" ".join(f"WHEN '{s}' THEN {i}" for i, s in enumerate(series))} END) AS rn
+                FROM prices WHERE series IN ({ph})),
+            q AS (
+                SELECT symbol, date, open, prev_close,
+                       lag(close) OVER (PARTITION BY symbol ORDER BY date) AS last_close,
+                       lag(date) OVER (PARTITION BY symbol ORDER BY date) AS last_date
+                FROM p WHERE rn = 1)
+            SELECT * FROM q WHERE date >= ? AND last_close > 0
+              AND (open / last_close < 0.6 OR open / last_close > 1.0 / 0.6)""", [*series, since])
+        gaps = infer_gap_actions(rows, self.store.corp_actions(), self.s["data"].get("gap_action_min", 0.4))
+        if not gaps.empty:
+            self.store.upsert_corp_actions(gaps)
+        return gaps
 
     def backfill_yahoo(self, years: int | None = None) -> RunReport:
         """Fast history load from Yahoo (minutes, no delivery data). NSE rows, when
