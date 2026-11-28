@@ -50,6 +50,18 @@ python -m nse_research.cli daily           # NSE bhavcopy + delivery for recent 
 streamlit run app/streamlit_app.py         # then open http://localhost:8501 in your browser
 ```
 
+### Open the dashboard as a Mac app
+
+```bash
+bash scripts/install_mac_app.sh
+```
+
+This builds **NSE Research.app** in `~/Applications`. Open it from Spotlight or Finder, or drag it
+to the Dock. Each click starts the dashboard in the background if it isn't running already, then
+opens http://localhost:8501 in your browser. It listens on this Mac only (127.0.0.1). The server's
+output goes to `data/logs/dashboard.log`. Stop it with `scripts/stop_dashboard.sh`. If you move the
+project folder, run the install command again.
+
 `backfill-fast` gets you working in minutes. To replace the Yahoo history with NSE's own files
 (more accurate, and includes delivery %), run this overnight. It's slow because NSE has to be
 fetched politely, about 1.5 to 2 hours for 10 years. It's safe to stop and restart, since every
