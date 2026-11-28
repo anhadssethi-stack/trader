@@ -33,6 +33,7 @@ data:
   delivery_sources: [nse_full_bhav, nse_mto]
   index_sources: [nse_index_close, yahoo]
   corp_action_min_change: 0.02  # prev-close vs last-close gap that counts as a split/bonus
+  gap_action_min: 0.4          # an overnight gap bigger than this, not flagged by NSE, is treated as a split/bonus
   retry_window_days: 14       # daily run re-tries NSE for days that only have Yahoo data
 
 scanner:
@@ -67,6 +68,7 @@ backtest:
                                 # (a point-in-time stand-in for "the Nifty 500 back then")
   min_avg_turnover_cr: 5.0      # point-in-time liquidity: 20-day avg turnover on the signal day, ₹ crore
   min_price: 20.0               # skip penny stocks (price on the signal day)
+  min_atr_pct: 0.5              # skip if ATR < 0.5% of price (stop would sit inside costs/slippage)
   start_date: null              # null = all stored history
   stop_atr: 2.0                 # stop = entry ∓ stop_atr × ATR(14) on the signal day
   target_r: 2.0                 # target = entry ± target_r × (entry − stop)

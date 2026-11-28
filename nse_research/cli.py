@@ -8,6 +8,7 @@
   python -m nse_research.cli daily                # update + scan (what the scheduler runs)
   python -m nse_research.cli health               # what was fetched, from where, what failed
   python -m nse_research.cli check-data           # look for missed splits / bad prices
+  python -m nse_research.cli repair-splits        # adjust splits/bonuses NSE didn't flag (whole history)
   python -m nse_research.cli backtest             # backtest every setup over all stored history
   python -m nse_research.cli demo                 # build a synthetic demo database
 """
@@ -43,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("daily")
     sub.add_parser("health")
     sub.add_parser("check-data")
+    sub.add_parser("repair-splits")
     sub.add_parser("demo")
     btp = sub.add_parser("backtest")
     btp.add_argument("--setups", nargs="*", help="setup ids (default: all)")
@@ -109,9 +111,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Scanned {len(df)} stocks.")
         if rep.errors:
             return 2  # non-zero so the scheduler log shows something needs a look
+    elif a.cmd == "repair-splits":
+        gaps = pipe.infer_gap_actions(date(1990, 1, 1))
+        print(f"Added {len(gaps)} splits/bonuses that NSE's files did not flag.")
+        if len(gaps):
+            print(gaps.sort_values("factor").head(30).to_string(index=False))
+        print("\nNow run: python -m nse_research.cli check-data")
     elif a.cmd == "check-data":
         from .data.quality import suspicious_moves
         bad = suspicious_moves(st, s["universe"]["series"])
+        funds = st.fund_symbols()
+        if len(bad) and funds:
+            nf = bad["symbol"].isin(funds).sum()
+            bad = bad[~bad["symbol"].isin(funds)]
+            print(f"({nf} moves in ETFs/fund units are left out: the backtest skips those.)")
         n_sym = st.q("SELECT count(DISTINCT symbol) AS n FROM prices")["n"].iloc[0]
         print(f"{len(bad)} one-day moves above 25% in split-adjusted prices, across "
               f"{bad['symbol'].nunique() if len(bad) else 0} of {n_sym} stocks.")

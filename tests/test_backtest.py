@@ -295,3 +295,11 @@ def test_save_backtest_adds_new_columns_to_old_tables(tmp_path):
     st.save_backtest("r2", old.assign(turnover_cr=12.5), pd.DataFrame(), {})
     tr, _, _ = st.load_backtest("r2")
     assert tr["turnover_cr"].tolist() == [12.5, 12.5]
+
+
+def test_tiny_atr_stocks_are_not_traded(cfg, settings):
+    from nse_research.backtest.engine import _eligible
+    d = pd.DataFrame({"date": pd.bdate_range("2024-01-01", periods=3), "close": [1000.0] * 3,
+                      "atr": [0.05, 5.0, 20.0], "atr_pct": [0.005, 0.5, 2.0], "turnover_avg_cr": [50.0] * 3,
+                      f"dma{max(cfg['dma_periods'])}": [1000.0] * 3})
+    assert _eligible(d, settings["backtest"], cfg).tolist() == [False, True, True]

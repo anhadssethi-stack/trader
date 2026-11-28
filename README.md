@@ -211,6 +211,22 @@ delivery % history, which only NSE files have, so it shows 0 trades until you ru
 - `all_stored`: every stored stock that passes the liquidity filter (₹5 cr/day on the signal day).
 - `current`: today's universe only (has survivorship bias).
 
+ETFs and other fund units (ISIN starting `INF`, e.g. GOLDBEES, LIQUIDETF, NIFTYBEES) are never
+backtested: they aren't company shares, and a liquid fund's tiny daily range would put the stop
+inside the costs. For the same reason any stock whose ATR is below 0.5% of its price
+(`min_atr_pct`) is skipped on that day.
+
+**Splits NSE didn't flag.** Normally a split or bonus is detected because NSE's file carries an
+adjusted previous close on the ex-date. Some older files (and ETF unit splits) don't, so the
+stock appears to crash 50–99% overnight. Since cash-segment stocks can move at most 20% a day,
+an overnight gap of more than 40% that NSE didn't flag is treated as a corporate action and
+adjusted (`data.gap_action_min`). The daily update does this automatically for new days; for
+history already stored, run once:
+
+```bash
+python -m nse_research.cli repair-splits
+```
+
 Run `python -m nse_research.cli check-data` after a backfill. It lists one-day moves above 25% in
 split-adjusted prices (usually a split or bonus that wasn't detected) and the backtest trades
 that lost more than 2R, so a data problem can't hide inside the results. To add a setup, add a

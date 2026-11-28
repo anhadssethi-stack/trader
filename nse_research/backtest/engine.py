@@ -125,6 +125,9 @@ def _eligible(d: pd.DataFrame, bt: dict, cfg: dict, top_days: set | None = None)
         ok &= pd.to_datetime(d["date"]).isin(top_days)
     if "turnover_avg_cr" in d:
         ok &= d["turnover_avg_cr"] >= bt["min_avg_turnover_cr"]
+    if "atr_pct" in d and bt.get("min_atr_pct"):
+        # a stop only a few paise away is inside the costs and slippage: one tick = many R
+        ok &= d["atr_pct"] >= bt["min_atr_pct"]
     if bt.get("start_date"):
         ok &= pd.to_datetime(d["date"]) >= pd.Timestamp(bt["start_date"])
     return ok
@@ -210,7 +213,9 @@ def top_turnover_days(store: Store, settings: Settings) -> dict[str, set]:
     df = store.q(f"""
         WITH d AS (
             SELECT date, symbol, max(coalesce(turnover, close * volume)) AS t
-            FROM prices WHERE series IN ({ph}) GROUP BY date, symbol),
+            FROM prices WHERE series IN ({ph})
+              AND symbol NOT IN (SELECT DISTINCT symbol FROM prices WHERE isin LIKE 'INF%')
+            GROUP BY date, symbol),
         a AS (
             SELECT date, symbol,
                    avg(t) OVER (PARTITION BY symbol ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS avg_t
@@ -242,7 +247,8 @@ def run_backtest(settings: Settings, store: Store, setup_ids: list[str] | None =
                  symbols: list[str] | None = None, batch: int = 100,
                  progress: Callable[[int, int], None] | None = None) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     setups = [s for s in SETUPS if not setup_ids or s.id in setup_ids]
-    symbols = symbols or backtest_symbols(settings, store)
+    funds = store.fund_symbols()
+    symbols = [s for s in (symbols or backtest_symbols(settings, store)) if s not in funds]
     b = settings["benchmark"]
     bidx = store.index_prices(b["index_name"])
     bench = bidx.set_index("date")["close"] if not bidx.empty else None

@@ -228,3 +228,46 @@ def test_suspicious_moves_flags_unadjusted_split(tmp_path):
     st.upsert_prices(px_rows(date(2026, 1, 7), close=50))   # 1:2 split nobody adjusted
     bad = suspicious_moves(st, ["EQ"])
     assert len(bad) == bad["symbol"].nunique() >= 1 and (bad["move_pct"] < -40).all()
+
+
+# ------------------------------------------------------------------ splits NSE didn't flag
+def test_infer_gap_actions_rules():
+    from nse_research.data.adjust import infer_gap_actions
+    rows = pd.DataFrame([
+        # 1:10 split, NSE prev_close not adjusted -> inferred
+        {"symbol": "A", "date": date(2020, 1, 6), "open": 41.0, "prev_close": 410.0, "last_close": 410.0},
+        # NSE already adjusted prev_close -> handled by detect_corp_actions, skip here
+        {"symbol": "B", "date": date(2020, 1, 6), "open": 205.0, "prev_close": 205.0, "last_close": 410.0},
+        # ordinary 15% fall -> not an action
+        {"symbol": "C", "date": date(2020, 1, 6), "open": 85.0, "prev_close": 100.0, "last_close": 100.0},
+        # already known action two days earlier -> skip
+        {"symbol": "D", "date": date(2020, 1, 8), "open": 50.0, "prev_close": 100.0, "last_close": 100.0},
+        # 1:5 consolidation (price jumps 5x), no prev_close (Yahoo row) -> inferred
+        {"symbol": "E", "date": date(2020, 1, 6), "open": 500.0, "prev_close": np.nan, "last_close": 100.0},
+    ])
+    known = pd.DataFrame({"symbol": ["D"], "ex_date": [date(2020, 1, 6)], "factor": [0.5], "source": ["yahoo"]})
+    out = infer_gap_actions(rows, known).set_index("symbol")
+    assert set(out.index) == {"A", "E"}
+    assert out.loc["A", "factor"] == pytest.approx(0.1) and out.loc["E", "factor"] == pytest.approx(5.0)
+
+
+def test_pipeline_repairs_unflagged_split(settings):
+    st = Store(settings.path("db_path"))
+    pipe = Pipeline(settings, st, http=object(), sources={})
+    st.upsert_prices(px_rows(date(2026, 1, 5), symbols=("AAA",), close=400))
+    st.upsert_prices(px_rows(date(2026, 1, 6), symbols=("AAA",), close=404))
+    st.upsert_prices(px_rows(date(2026, 1, 7), symbols=("AAA",), close=101, prev=404))  # 1:4, unflagged
+    found = pipe.infer_gap_actions(date(1990, 1, 1))
+    assert len(found) == 1 and found["factor"].iloc[0] == pytest.approx(0.25, rel=0.01)
+    adj = st.adjusted_prices(["AAA"])
+    assert adj["close"].tolist() == pytest.approx([100, 101, 101], rel=0.01)
+    assert len(pipe.infer_gap_actions(date(1990, 1, 1))) == 0     # running it again adds nothing
+
+
+def test_fund_units_are_recognised(tmp_path):
+    st = Store(tmp_path / "f.duckdb")
+    rows = px_rows(date(2026, 1, 5), symbols=("GOLDBEES", "RELIANCE"))
+    rows.loc[rows["symbol"] == "GOLDBEES", "isin"] = "INF204KB17I5"
+    rows.loc[rows["symbol"] == "RELIANCE", "isin"] = "INE002A01018"
+    st.upsert_prices(rows)
+    assert st.fund_symbols() == {"GOLDBEES"}
