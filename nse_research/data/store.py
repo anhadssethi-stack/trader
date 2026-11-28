@@ -150,6 +150,11 @@ class Store:
                 if not exists:
                     self.con.execute(f"CREATE TABLE {table} AS SELECT * FROM _bt")
                 else:
+                    # columns added in newer versions: add them so old databases keep working
+                    have = set(self.q(f"SELECT * FROM {table} LIMIT 0").columns)
+                    types = {r[0]: r[1] for r in self.con.execute("DESCRIBE _bt").fetchall()}
+                    for col in [c for c in df.columns if c not in have]:
+                        self.con.execute(f'ALTER TABLE {table} ADD COLUMN "{col}" {types[col]}')
                     self.con.execute(f"DELETE FROM {table} WHERE run_id = ?", [run_id])
                     self.con.execute(f"INSERT INTO {table} BY NAME SELECT * FROM _bt")
             finally:

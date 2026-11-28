@@ -265,3 +265,33 @@ def test_every_setup_has_logic_text_and_valid_side():
     assert len({s.id for s in SETUPS}) == len(SETUPS)
     for s in SETUPS:
         assert s.side in ("long", "short") and len(s.logic) > 20
+
+
+def test_top_turnover_days_is_point_in_time(tmp_path, settings):
+    from nse_research.backtest.engine import top_turnover_days
+    from nse_research.data.sources.base import PRICE_COLS
+    from nse_research.data.store import Store
+    st = Store(tmp_path / "t.duckdb")
+    days = pd.bdate_range("2021-01-01", periods=60)
+    rows = []
+    for k, d in enumerate(days):
+        # BIG is the most traded early on; SMALL overtakes it after day 30; MID always second-ish
+        for sym, t in [("BIG", 9e8 if k < 30 else 1e7), ("SMALL", 1e6 if k < 30 else 5e9), ("MID", 5e8)]:
+            rows.append({"date": d.date(), "symbol": sym, "series": "EQ", "isin": None, "open": 100, "high": 101,
+                         "low": 99, "close": 100, "prev_close": 100, "volume": t / 100, "turnover": t,
+                         "trades": 1, "source": "nse_udiff"})
+    st.upsert_prices(pd.DataFrame(rows)[PRICE_COLS])
+    settings["backtest"]["top_n"] = 2
+    top = top_turnover_days(st, settings)
+    assert pd.Timestamp(days[5]) in top["BIG"] and pd.Timestamp(days[5]) not in top.get("SMALL", set())
+    assert pd.Timestamp(days[59]) in top["SMALL"] and pd.Timestamp(days[59]) not in top["BIG"]
+
+
+def test_save_backtest_adds_new_columns_to_old_tables(tmp_path):
+    from nse_research.data.store import Store
+    st = Store(tmp_path / "b.duckdb")
+    old = _trades([1, -1])
+    st.save_backtest("r1", old, pd.DataFrame(), {})
+    st.save_backtest("r2", old.assign(turnover_cr=12.5), pd.DataFrame(), {})
+    tr, _, _ = st.load_backtest("r2")
+    assert tr["turnover_cr"].tolist() == [12.5, 12.5]

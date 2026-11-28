@@ -218,3 +218,13 @@ def test_index_days_from_yahoo_are_upgraded_to_nse(settings):
     pipe.src["nse_index_close"] = Ix()
     pipe.update(date(2026, 1, 5), date(2026, 1, 5))
     assert st.index_prices("Nifty 500")["source"].tolist() == ["nse_index_close"]
+
+
+def test_suspicious_moves_flags_unadjusted_split(tmp_path):
+    from nse_research.data.quality import suspicious_moves
+    st = Store(tmp_path / "q.duckdb")
+    st.upsert_prices(px_rows(date(2026, 1, 5), close=100))
+    st.upsert_prices(px_rows(date(2026, 1, 6), close=101))
+    st.upsert_prices(px_rows(date(2026, 1, 7), close=50))   # 1:2 split nobody adjusted
+    bad = suspicious_moves(st, ["EQ"])
+    assert len(bad) == bad["symbol"].nunique() >= 1 and (bad["move_pct"] < -40).all()

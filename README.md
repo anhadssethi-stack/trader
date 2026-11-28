@@ -201,11 +201,19 @@ which backtested setups fired on today's bar, with their historical record.
 Shorts are only taken on F&O stocks (multi-day shorts need futures). `L_delivery_up` needs
 delivery % history, which only NSE files have, so it shows 0 trades until you run the NSE backfill.
 
-The backtest covers **every stock stored** with at least `min_history_days` of history, not only
-today's Nifty 500, so stocks that later dropped out still count (less survivorship bias). The
-daily NSE file adds about 2,900 symbols with only a few days of data; they are skipped until
-the NSE backfill gives them history, after which the liquidity filter (₹5 cr/day on the signal
-day) decides which ones trade. To add a setup, add a
+**Which stocks are tested** (`backtest.universe`):
+
+- `top_turnover` (default): on each signal day, only the `top_n` (500) most-traded stocks *that
+  day* by 20-day average turnover. This is a point-in-time stand-in for "the Nifty 500 back
+  then": it includes stocks that later fell out or were delisted (no survivorship bias), but
+  not the thousands of small stocks the full NSE backfill also stores. The run log says how
+  many stocks were ever in the top 500 (typically 1,000+ over ten years).
+- `all_stored`: every stored stock that passes the liquidity filter (₹5 cr/day on the signal day).
+- `current`: today's universe only (has survivorship bias).
+
+Run `python -m nse_research.cli check-data` after a backfill. It lists one-day moves above 25% in
+split-adjusted prices (usually a split or bonus that wasn't detected) and the backtest trades
+that lost more than 2R, so a data problem can't hide inside the results. To add a setup, add a
 function and a `Setup(...)` entry in `nse_research/backtest/setups.py`.
 
 ### How each trade is simulated

@@ -119,8 +119,10 @@ def trade_pnl(side: str, entry: float, exit_price: float, qty: int, costs_cfg: d
     return gross, cb.total
 
 
-def _eligible(d: pd.DataFrame, bt: dict, cfg: dict) -> pd.Series:
+def _eligible(d: pd.DataFrame, bt: dict, cfg: dict, top_days: set | None = None) -> pd.Series:
     ok = d["atr"].notna() & d[f"dma{max(cfg['dma_periods'])}"].notna() & (d["close"] >= bt["min_price"])
+    if top_days is not None:
+        ok &= pd.to_datetime(d["date"]).isin(top_days)
     if "turnover_avg_cr" in d:
         ok &= d["turnover_avg_cr"] >= bt["min_avg_turnover_cr"]
     if bt.get("start_date"):
@@ -130,13 +132,16 @@ def _eligible(d: pd.DataFrame, bt: dict, cfg: dict) -> pd.Series:
 
 def backtest_symbol(sym: str, px: pd.DataFrame, settings: Settings, bench: pd.Series | None,
                     setups: list[Setup], fno: set[str], current: set[str],
-                    market_last: np.datetime64 | None = None) -> tuple[list[dict], list[dict]]:
+                    market_last: np.datetime64 | None = None,
+                    top_days: set | None = None) -> tuple[list[dict], list[dict]]:
+    """top_days: if given, signals only count on these dates (the stock was in the
+    top-N by turnover that day)."""
     cfg, bt = settings["scanner"], settings["backtest"]
     d = add_indicators(px.sort_values("date").reset_index(drop=True), cfg, bench)
     if len(d) < 2:
         return [], []
     sig = setup_signals(d, cfg, setups)
-    elig = _eligible(d, bt, cfg).to_numpy()
+    elig = _eligible(d, bt, cfg, top_days).to_numpy()
     o, h, l, c = (d[k].to_numpy(float) for k in ("open", "high", "low", "close"))
     atr = d["atr"].to_numpy(float)
     dates = pd.to_datetime(d["date"]).to_numpy()
@@ -176,6 +181,7 @@ def backtest_symbol(sym: str, px: pd.DataFrame, settings: Settings, bench: pd.Se
                 "r": net / risk_rs if risk_rs else 0.0,
                 "ret_pct": net / (res.entry * qty) * 100 if qty else 0.0,
                 **{f"hit_{r}r": res.hit_levels[r] for r in r_levels},
+                "turnover_cr": float(d["turnover_avg_cr"].iat[t]) if "turnover_avg_cr" in d else float("nan"),
                 "in_current_universe": sym in current,
                 "yahoo_share": float(np.mean(window_src == "yahoo")) if len(window_src) else 0.0,
             })
@@ -191,6 +197,31 @@ def backtest_symbol(sym: str, px: pd.DataFrame, settings: Settings, bench: pd.Se
                                                   and dates[-1] >= market_last else g.reason),
                                   "r": (gg - gc) / grisk if grisk else 0.0})
     return trades, grid_rows
+
+
+def top_turnover_days(store: Store, settings: Settings) -> dict[str, set]:
+    """For each symbol, the dates on which it ranked in the top `top_n` of all stored
+    stocks by 20-day average turnover. Uses only data up to that date (no look-ahead),
+    and includes stocks that were later delisted. Turnover is in rupees, so splits
+    don't affect it."""
+    bt = settings["backtest"]
+    series = settings["universe"]["series"]
+    ph = ",".join("?" * len(series))
+    df = store.q(f"""
+        WITH d AS (
+            SELECT date, symbol, max(coalesce(turnover, close * volume)) AS t
+            FROM prices WHERE series IN ({ph}) GROUP BY date, symbol),
+        a AS (
+            SELECT date, symbol,
+                   avg(t) OVER (PARTITION BY symbol ORDER BY date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) AS avg_t
+            FROM d),
+        r AS (
+            SELECT date, symbol, rank() OVER (PARTITION BY date ORDER BY avg_t DESC NULLS LAST) AS rk FROM a)
+        SELECT date, symbol FROM r WHERE rk <= ?""", [*series, int(bt.get("top_n", 500))])
+    if df.empty:
+        return {}
+    df["date"] = pd.to_datetime(df["date"])
+    return {s: set(g["date"]) for s, g in df.groupby("symbol")}
 
 
 def backtest_symbols(settings: Settings, store: Store) -> list[str]:
@@ -219,6 +250,11 @@ def run_backtest(settings: Settings, store: Store, setup_ids: list[str] | None =
     current = set(store.universe()["symbol"])
     last = store.last_price_date()
     market_last = np.datetime64(pd.Timestamp(last)) if last is not None else None
+    top = top_turnover_days(store, settings) if settings["backtest"]["universe"] == "top_turnover" else None
+    if top is not None:
+        symbols = [s for s in symbols if s in top]
+        log.info("backtest: %d stocks were in the top %d by turnover on at least one day",
+                 len(symbols), settings["backtest"].get("top_n", 500))
     all_trades, all_grid = [], []
     for k in range(0, len(symbols), batch):
         chunk = symbols[k:k + batch]
@@ -227,7 +263,8 @@ def run_backtest(settings: Settings, store: Store, setup_ids: list[str] | None =
             if len(g) < settings["scanner"]["min_history_days"]:
                 continue
             try:
-                t, gr = backtest_symbol(sym, g, settings, bench, setups, fno, current, market_last)
+                t, gr = backtest_symbol(sym, g, settings, bench, setups, fno, current, market_last,
+                                        top.get(sym) if top is not None else None)
             except Exception as e:  # noqa: BLE001 - one bad series must not stop the run
                 log.warning("backtest failed for %s: %s", sym, e)
                 continue
@@ -244,6 +281,7 @@ def run_backtest(settings: Settings, store: Store, setup_ids: list[str] | None =
     meta = {
         "created": pd.Timestamp.now().isoformat(timespec="seconds"),
         "symbols_tested": len(symbols),
+        "universe": settings["backtest"]["universe"], "top_n": settings["backtest"].get("top_n"),
         "data_first": str(span["first"])[:10], "data_last": str(span["last"])[:10],
         "price_rows_by_source": dict(zip(src["source"], src["n"].astype(int))),
         "fno_symbols": len(fno),

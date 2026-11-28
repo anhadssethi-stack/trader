@@ -351,7 +351,9 @@ def page_backtest(_ov):
         f"Entry next day's open; stop {p['stop_atr']}× ATR; target {p['target_r']}R; time exit after "
         f"{p['max_hold_days']} days; slippage {p['slippage_bps']} bps each side; all Indian costs included. "
         f"Longs = cash delivery, shorts = stock futures on F&O stocks only. "
-        f"Only stocks with ≥ ₹{p['min_avg_turnover_cr']} cr average daily turnover *on the signal day*.")
+        f"Only stocks with ≥ ₹{p['min_avg_turnover_cr']} cr average daily turnover *on the signal day*"
+        + (f", and among the {meta.get('top_n')} most-traded stocks that day." if meta.get("universe") == "top_turnover"
+           else "."))
     with st.expander("How to read this"):
         st.markdown(
             "- **Win rate** is net of costs, with its 95% range. A wide range means few trades.\n"

@@ -62,7 +62,9 @@ scanner:
   min_avg_turnover_cr: 1.0     # skip illiquid stocks (20-day avg turnover, ₹ crore)
 
 backtest:
-  universe: all_stored          # all_stored (includes delisted stocks if their NSE history is stored) | current
+  universe: top_turnover        # top_turnover | all_stored | current (see README)
+  top_n: 500                    # top_turnover: only the N most-traded stocks *on the signal day*
+                                # (a point-in-time stand-in for "the Nifty 500 back then")
   min_avg_turnover_cr: 5.0      # point-in-time liquidity: 20-day avg turnover on the signal day, ₹ crore
   min_price: 20.0               # skip penny stocks (price on the signal day)
   start_date: null              # null = all stored history

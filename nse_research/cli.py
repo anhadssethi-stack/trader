@@ -7,6 +7,7 @@
   python -m nse_research.cli scan                 # run the technical scanner
   python -m nse_research.cli daily                # update + scan (what the scheduler runs)
   python -m nse_research.cli health               # what was fetched, from where, what failed
+  python -m nse_research.cli check-data           # look for missed splits / bad prices
   python -m nse_research.cli backtest             # backtest every setup over all stored history
   python -m nse_research.cli demo                 # build a synthetic demo database
 """
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("scan")
     sub.add_parser("daily")
     sub.add_parser("health")
+    sub.add_parser("check-data")
     sub.add_parser("demo")
     btp = sub.add_parser("backtest")
     btp.add_argument("--setups", nargs="*", help="setup ids (default: all)")
@@ -107,6 +109,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Scanned {len(df)} stocks.")
         if rep.errors:
             return 2  # non-zero so the scheduler log shows something needs a look
+    elif a.cmd == "check-data":
+        from .data.quality import suspicious_moves
+        bad = suspicious_moves(st, s["universe"]["series"])
+        n_sym = st.q("SELECT count(DISTINCT symbol) AS n FROM prices")["n"].iloc[0]
+        print(f"{len(bad)} one-day moves above 25% in split-adjusted prices, across "
+              f"{bad['symbol'].nunique() if len(bad) else 0} of {n_sym} stocks.")
+        if len(bad):
+            print("Large falls often mean a split/bonus that was not detected. Biggest:")
+            print(bad.head(25).round({"last_close": 2, "close": 2, "move_pct": 1, "prev_close": 2})
+                  .to_string(index=False))
+        runs = st.backtest_runs()
+        if not runs.empty:
+            tr, _, _ = st.load_backtest(runs["run_id"].iloc[0])
+            done = tr[tr["exit_reason"].isin(["stop", "target", "time", "data_end"])]
+            if len(done):
+                big = done[done["r"] < -2]
+                print(f"\nLatest backtest: {len(big)} of {len(done)} trades lost more than 2R "
+                      f"({big['r'].sum():.0f}R of the {done.loc[done['r'] < 0, 'r'].sum():.0f}R lost in total).")
+                if len(big):
+                    print(big.nsmallest(15, "r")[["setup", "symbol", "entry_date", "exit_date", "entry",
+                                                  "exit", "exit_reason", "r"]].round({"entry": 2, "exit": 2, "r": 2})
+                          .to_string(index=False))
     elif a.cmd == "health":
         print(st.q("""SELECT dataset, source, status, count(*) AS n, max(day) AS latest_day
                       FROM fetch_log GROUP BY ALL ORDER BY dataset, source, status""").to_string(index=False))

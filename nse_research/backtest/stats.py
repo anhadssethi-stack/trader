@@ -48,10 +48,17 @@ def closed(trades: pd.DataFrame) -> pd.DataFrame:
 def portfolio_curve(trades: pd.DataFrame, settings) -> tuple[pd.DataFrame, dict]:
     """Replay the trades as one account with your settings: start with `capital`,
     hold at most floor(100 / max_position_pct) positions at once (10 with a 10% cap),
-    take signals in entry-date order and skip any that arrive when all slots are full.
+    take signals in entry-date order (most liquid first on the same day) and skip any that
+    arrive when all slots are full.
     P&L (net of costs) is booked on the exit date. No compounding: sizes stay as sized.
     Returns (daily equity curve, stats)."""
-    t = closed(trades).sort_values(["entry_date", "symbol"])
+    t = closed(trades)
+    # Same-day signals: take the most liquid stocks first (as you would in practice),
+    # rather than whichever comes first alphabetically.
+    if "turnover_cr" in t:
+        t = t.assign(_liq=-t["turnover_cr"].fillna(0)).sort_values(["entry_date", "_liq", "symbol"])
+    else:
+        t = t.sort_values(["entry_date", "symbol"])
     cap = settings["profile"]["capital"]
     slots = max(1, int(100 // settings["profile"]["max_position_pct"]))
     if t.empty:
