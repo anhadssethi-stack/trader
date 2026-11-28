@@ -67,6 +67,8 @@ def update_fundamentals(settings: Settings, store: Store, symbols: list[str], fo
             rep.fetched[src.name] = rep.fetched.get(src.name, 0) + 1
             break
         else:
+            if all("NotFound" in e or "no statements" in e for e in errors):
+                errors.append("symbol renamed or delisted? (e.g. ZOMATO is now ETERNAL); run `init` to refresh the list")
             rep.failed.append((sym, "; ".join(errors)))
             store.log_fetch(None, "fundamentals", "all", "failed", 0, f"{sym}: {'; '.join(errors)}")
         if i % 25 == 0:

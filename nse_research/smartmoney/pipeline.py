@@ -48,8 +48,12 @@ def update_deals(settings: Settings, store: Store, nse: NseSmartMoney, rep: Smar
     except Exception as e:  # noqa: BLE001
         rep.errors.append(f"deals today: {type(e).__name__} {e}")
         store.log_fetch(None, "deals", "nse_archive", "error", 0, str(e))
-    # the daily files only cover the latest day; on the first run try the history API once
-    if store.get_meta("deals_backfilled") != "1":
+    # the daily files only cover the latest day; try the history API until it works once,
+    # at most once a week (it often answers 503 for days)
+    tried = store.get_meta("deals_backfill_tried")
+    recent_try = tried and date.fromisoformat(tried) > date.today() - timedelta(days=7)
+    if store.get_meta("deals_backfilled") != "1" and not recent_try:
+        store.set_meta("deals_backfill_tried", date.today().isoformat())
         end = date.today()
         start = end - timedelta(days=settings["smart_money"]["deals_backfill_days"])
         got, failed = 0, 0
@@ -61,13 +65,14 @@ def update_deals(settings: Settings, store: Store, nse: NseSmartMoney, rep: Smar
             except Exception as e:  # noqa: BLE001 - this API often answers 503
                 failed += 1
                 log.info("historical deals %s..%s failed: %s", cur, nxt, e)
+                break                      # down: don't spend minutes retrying every month
             cur = nxt + timedelta(days=1)
         rep.deals += got
         if failed == 0:
             store.set_meta("deals_backfilled", "1")
         else:
-            rep.errors.append(f"deal history: {failed} of the monthly requests failed (NSE's history API "
-                              "is often down; it is retried on the next run, and daily files keep accumulating)")
+            rep.errors.append("deal history: NSE's history API is not answering (it is often down). It is tried "
+                              "again in a week; meanwhile the daily files build up the history.")
 
 
 def update_flows(store: Store, nse: NseSmartMoney, rep: SmartReport) -> None:
@@ -89,7 +94,7 @@ def update_shareholding_symbol(settings: Settings, store: Store, nse: NseSmartMo
     store.upsert_shareholding(pd.DataFrame({"symbol": sym, "quarter_end": master["quarter_end"],
                                             "category": "promoter", "pct": master["promoter_pct"],
                                             "source": "nse_master"}).dropna(subset=["pct"]))
-    pledged_latest = None
+    pledged_latest = None    # set when a filing says "pledged" without giving the number
     for r in master.dropna(subset=["xbrl"]).tail(cfg["xbrl_quarters"]).itertuples():
         totals, holders, extra = nse.shp_xbrl(r.xbrl, sym, r.quarter_end)
         rep.shp_filings += 1
@@ -97,18 +102,22 @@ def update_shareholding_symbol(settings: Settings, store: Store, nse: NseSmartMo
             store.upsert_shareholding(totals.assign(symbol=sym, source="nse_xbrl"))
         if len(holders):
             store.upsert_holders(holders.assign(symbol=sym, source="nse_xbrl"))
-        pledged_latest = (r.quarter_end, extra.get("promoter_pledged"))
-    try:
-        pl = nse.pledges(sym)
-    except Exception as e:  # noqa: BLE001 - pledge % is optional
-        pl = pd.DataFrame()
-        log.debug("pledge API failed for %s: %s", sym, e)
-    if len(pl):
-        store.upsert_pledges(pl.assign(symbol=sym, source="nse_pledge"))
-    elif pledged_latest and pledged_latest[1] is False:
-        # no pledge records and the filing says promoters have pledged nothing
-        store.upsert_pledges(pd.DataFrame({"symbol": [sym], "as_of": [pledged_latest[0]], "promoter_pct": [None],
-                                           "pledge_pct": [0.0], "source": ["nse_xbrl"]}))
+        if extra.get("pledge_pct") is not None:
+            prom = totals.loc[totals["category"] == "promoter", "pct"]
+            store.upsert_pledges(pd.DataFrame({"symbol": [sym], "as_of": [r.quarter_end],
+                                               "promoter_pct": [float(prom.iloc[0]) if len(prom) else None],
+                                               "pledge_pct": [extra["pledge_pct"]], "source": ["nse_xbrl"]}))
+        else:
+            pledged_latest = (r.quarter_end, extra.get("promoter_pledged"))
+    if pledged_latest is not None:
+        # the filing doesn't give a number: try NSE's pledge API (often empty)
+        try:
+            pl = nse.pledges(sym)
+        except Exception as e:  # noqa: BLE001 - pledge % is optional
+            pl = pd.DataFrame()
+            log.debug("pledge API failed for %s: %s", sym, e)
+        if len(pl):
+            store.upsert_pledges(pl.assign(symbol=sym, source="nse_pledge"))
     store.set_meta(f"shp_checked:{sym}", date.today().isoformat())
 
 

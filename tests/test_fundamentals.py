@@ -349,3 +349,39 @@ def test_yahoo_mapping_stub():
     assert f.series("balance", "reserves").iloc[-1] == pytest.approx(19000)
     assert f.series("ratios", "debtor_days").iloc[-1] == pytest.approx(4e10 / 4e11 * 365)
     assert f.is_financial and f.ratios["mcap_cr"] == pytest.approx(1e6)
+
+
+def test_xbrl_pledge_and_zero_holders():
+    from pathlib import Path
+    from nse_research.smartmoney.nse import parse_shp_master, parse_shp_xbrl
+    raw = (Path(__file__).parent / "fixtures" / "shp_sample.xml").read_text()
+    raw = raw.replace("contextRef=\"MainI\">false<", "contextRef=\"MainI\">true<").replace(
+        "</xbrli:xbrl>",
+        '<in-bse-shp:NumberOfSharesEncumberedUnderPledged contextRef="ShareholdingOfPromoterAndPromoterGroup_ContextI"'
+        ' unitRef="shares" decimals="INF">671549609</in-bse-shp:NumberOfSharesEncumberedUnderPledged>'
+        '<in-bse-shp:NameOfTheShareholder contextRef="BodiesCorporate_Context9">Empty Trust</in-bse-shp:NameOfTheShareholder>'
+        '<in-bse-shp:TypeOfPromoterShareholding contextRef="BodiesCorporate_Context9">Promoter Group</in-bse-shp:TypeOfPromoterShareholding>'
+        '<in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="BodiesCorporate_Context9" unitRef="pure">0</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>'
+        "</xbrli:xbrl>")
+    _, h, extra = parse_shp_xbrl(raw.encode())
+    assert extra["promoter_pledged"] is True
+    assert extra["pledge_pct"] == pytest.approx(10.0, abs=0.01)   # pledged / promoter shares
+    assert "Empty Trust" not in set(h["name"])
+    _, _, none = parse_shp_xbrl((Path(__file__).parent / "fixtures" / "shp_sample.xml").read_bytes())
+    assert none["pledge_pct"] == 0.0
+    m = parse_shp_master(b'[{"date":"30-SEP-2026","pr_and_prgrp":"71.97"},{"date":"07-JUL-2026","pr_and_prgrp":"74.84"},'
+                         b'{"date":"30-JUN-2026","pr_and_prgrp":"74.67"}]')
+    assert list(m["promoter_pct"]) == [74.67, 71.97]           # off-cycle 07-Jul filing dropped
+
+
+def test_change_by_date_and_financial_metrics():
+    f = make_fund(promoter=(60, 60, 59, 58, 57))
+    # drop one quarter: the 4-quarter change must then be unknown, not compared with the wrong quarter
+    f.shareholding = f.shareholding.drop(index=0)
+    m = compute(f, price=40.0)
+    assert m["promoter_chg_4q"] is None and m["promoter_chg_1q"] == pytest.approx(-1.0)
+    f2 = make_fund()
+    f2.ratios["roe_pct"] = 8.91
+    assert compute(f2, price=40.0)["roe_pct"] == 8.91             # published ROE preferred
+    bank = compute(make_fund(fin=True), price=40.0)
+    assert bank["roce_pct"] is None and bank["cfo_to_profit_3y"] is None

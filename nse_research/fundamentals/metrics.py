@@ -53,6 +53,16 @@ def _ago(s: pd.Series, n: int) -> float | None:
     return _f(s.iloc[-1 - n]) if len(s) > n else None
 
 
+def _change(h: pd.Series, months: int) -> float | None:
+    """Latest value minus the value for the quarter `months` earlier (by date, so a
+    missing quarter gives None instead of comparing with the wrong one)."""
+    if len(h) < 2:
+        return None
+    then = (h.index[-1] - pd.DateOffset(months=months)) + pd.offsets.MonthEnd(0)
+    near = h[(h.index >= then - pd.Timedelta(days=5)) & (h.index <= then + pd.Timedelta(days=5))]
+    return float(h.iloc[-1] - near.iloc[-1]) if len(near) else None
+
+
 def compute(f: Fundamentals, price: float | None = None) -> dict:
     """All metrics for one company as a flat dict (None = not available)."""
     m: dict = {"symbol": f.symbol, "source": f.source, "basis": f.basis,
@@ -81,19 +91,25 @@ def compute(f: Fundamentals, price: float | None = None) -> dict:
     m["borrowings_cr"] = _last(debt)
     m["debt_to_equity"] = (_last(debt) / _last(eq)) if _last(debt) is not None and (_last(eq) or 0) > 0 else None
 
-    # ROE = net profit / average equity (latest year)
-    if len(np_) and len(eq) >= 2 and np_.index[-1] in eq.index:
+    # ROE: the source's own figure first (Screener uses profit attributable to shareholders,
+    # which excludes minority interests); else net profit / average equity, latest year
+    if _f(r.get("roe_pct")) is not None:
+        m["roe_pct"], src["roe_pct"] = _f(r.get("roe_pct")), "published"
+    elif len(f.series("ratios", "roe_pct")):
+        m["roe_pct"], src["roe_pct"] = _last(f.series("ratios", "roe_pct")), "source ratios table"
+    elif len(np_) and len(eq) >= 2 and np_.index[-1] in eq.index:
         i = eq.index.get_loc(np_.index[-1])
         avg_eq = (eq.iloc[i] + eq.iloc[i - 1]) / 2 if i >= 1 else eq.iloc[i]
         m["roe_pct"] = float(np_.iloc[-1] / avg_eq * 100) if avg_eq > 0 else None
-        src["roe_pct"] = "computed"
+        src["roe_pct"] = "computed (incl. minority interests)"
     else:
-        m["roe_pct"] = _f(r.get("roe_pct"))
-        src["roe_pct"] = "published" if m["roe_pct"] is not None else None
+        m["roe_pct"] = None
 
     # ROCE = EBIT / capital employed (equity + borrowings); the source's own ROCE row if present
     roce_hist = f.series("ratios", "roce_pct")
-    if len(roce_hist):
+    if f.is_financial:
+        m["roce_pct"] = None        # capital employed has no meaning for a lender; ROE is used
+    elif len(roce_hist):
         m["roce_pct"] = _last(roce_hist)
         src["roce_pct"] = "source ratios table"
     else:
@@ -122,7 +138,8 @@ def compute(f: Fundamentals, price: float | None = None) -> dict:
         c3 = cfo.iloc[-3:].sum()
         m["cfo_3y_cr"] = float(c3)
         m["profit_3y_cr"] = _f(p3)
-        m["cfo_to_profit_3y"] = float(c3 / p3) if p3 and p3 > 0 else None
+        # a lender's operating cash flow is mostly loans made/repaid, not earnings quality
+        m["cfo_to_profit_3y"] = float(c3 / p3) if p3 and p3 > 0 and not f.is_financial else None
     else:
         m["cfo_3y_cr"] = m["profit_3y_cr"] = m["cfo_to_profit_3y"] = None
     # free cash flow, last 3 years: the source's FCF row (CFO - capex) when published,
@@ -158,8 +175,8 @@ def compute(f: Fundamentals, price: float | None = None) -> dict:
     for cat in ("promoter", "fii", "dii", "mf", "public"):
         h = f.holding(cat)
         m[f"{cat}_pct"] = _last(h)
-        m[f"{cat}_chg_1q"] = (h.iloc[-1] - h.iloc[-2]) if len(h) >= 2 else None
-        m[f"{cat}_chg_4q"] = (h.iloc[-1] - h.iloc[-5]) if len(h) >= 5 else None
+        m[f"{cat}_chg_1q"] = _change(h, 3)
+        m[f"{cat}_chg_4q"] = _change(h, 12)
     prom = f.holding("promoter")
     m["shareholding_quarter"] = prom.index[-1].date().isoformat() if len(prom) else None
     m["pledge_pct"] = _f(r.get("pledge_pct"))

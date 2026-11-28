@@ -57,6 +57,10 @@ def parse_shp_master(raw: bytes | str | list) -> pd.DataFrame:
                      "submitted": pd.to_datetime(it.get("submissionDate"), format="%d-%b-%Y", errors="coerce"),
                      "revised": it.get("revisedData") == "Y"})
     df = pd.DataFrame(rows, columns=["quarter_end", "promoter_pct", "public_pct", "xbrl", "submitted", "revised"])
+    # off-cycle filings (after a rights issue, allotment, etc.) are dated mid-quarter; keep only
+    # the regular quarter-end filings so "change over 4 quarters" compares like with like
+    qe = df["quarter_end"]
+    df = df[qe.dt.month.isin([3, 6, 9, 12]) & qe.dt.is_month_end]
     # a quarter can be filed twice (revision): keep the latest submission
     return df.sort_values(["quarter_end", "submitted"]).drop_duplicates("quarter_end", keep="last") \
         .sort_values("quarter_end").reset_index(drop=True)
@@ -99,7 +103,8 @@ def parse_shp_xbrl(raw: bytes) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
 
     totals:  quarter_end, category, pct          (pct 0-100)
     holders: quarter_end, name, category, pct, shares
-    extra:   {"promoter_pledged": bool | None}
+    extra:   {"promoter_pledged": bool | None, "pledge_pct": float | None}
+             pledge_pct = promoter shares pledged / promoter shares held x 100
     In these filings the number sits in a generic fact (e.g. the % of shares) and the
     category or holder is carried by the context the fact points to.
     """
@@ -141,11 +146,22 @@ def parse_shp_xbrl(raw: bytes) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
                          or facts.get("D_" + ref, {}).get("TypeOfPromoterShareholding"))
             holders.append((quarter_end, re.sub(r"\s+", " ", nm).strip(), _holder_category(prefix, promo),
                             pct * 100, _num(f.get("NumberOfShares") or f.get("NumberOfFullyPaidUpEquityShares"))))
+    # pledge: the encumbrance facts on the promoter-group total (omitted when nothing is pledged)
+    pf = facts.get("ShareholdingOfPromoterAndPromoterGroup_ContextI", {})
+    pledged_sh, prom_sh = _num(pf.get("NumberOfSharesEncumberedUnderPledged")), _num(pf.get("NumberOfShares"))
+    if pledged_sh is not None and prom_sh:
+        pledge_pct = pledged_sh / prom_sh * 100
+    elif _num(pf.get("EncumberedShareUnderPledgedAsPercentageOfTotalNumberOfShares")) is not None:
+        pledge_pct = _num(pf.get("EncumberedShareUnderPledgedAsPercentageOfTotalNumberOfShares")) * 100
+    else:
+        pledge_pct = 0.0 if pledged is False else None
     t = pd.DataFrame(totals, columns=["quarter_end", "category", "pct"])
     h = pd.DataFrame(holders, columns=["quarter_end", "name", "category", "pct", "shares"])
+    # promoter-group entities holding nothing are listed too (hundreds for some groups): drop them
+    h = h[(h["pct"] > 0) | (h["shares"].fillna(0) > 0)]
     # the same holder can appear in two sub-tables (e.g. FPI category I and a >1% list)
     h = h.sort_values("pct", ascending=False).drop_duplicates(["name", "category"]).reset_index(drop=True)
-    return t, h, {"promoter_pledged": pledged}
+    return t, h, {"promoter_pledged": pledged, "pledge_pct": pledge_pct}
 
 
 # ---------------------------------------------------------------- pledges
