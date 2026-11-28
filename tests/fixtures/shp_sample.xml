@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SHP V1.2 trimmed sample, structure as in NSE's archive filings -->
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+  xmlns:in-bse-shp="http://www.bseindia.com/xbrl/shp/2025-10-31/in-bse-shp">
+ <xbrli:context id="MainD"><xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com/in-bse-shp/ScripCode">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-07-01</xbrli:startDate><xbrli:endDate>2026-09-30</xbrli:endDate></xbrli:period></xbrli:context>
+ <xbrli:context id="MainI"><xbrli:entity><xbrli:identifier scheme="http://www.bseindia.com/in-bse-shp/ScripCode">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="ShareholdingOfPromoterAndPromoterGroup_ContextI"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period><xbrli:scenario><xbrldi:explicitMember dimension="in-bse-shp:CategoryOfShareholdersAxis">in-bse-shp:ShareholdingOfPromoterAndPromoterGroupMember</xbrldi:explicitMember></xbrli:scenario></xbrli:context>
+ <xbrli:context id="InstitutionsForeign_ContextI"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="InstitutionsDomestic_ContextI"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="MutualFundsOrUTI_ContextI"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="NonInstitutions_ContextI"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="PublicShareholding_ContextI"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="MutualFundsOrUTI_Context15"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="D_MutualFundsOrUTI_Context15"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2026-07-01</xbrli:startDate><xbrli:endDate>2026-09-30</xbrli:endDate></xbrli:period></xbrli:context>
+ <xbrli:context id="BodiesCorporate_Context3"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <xbrli:context id="IndividualsOrHinduUndividedFamily_Context7"><xbrli:entity><xbrli:identifier scheme="x">500325</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:instant>2026-09-30</xbrli:instant></xbrli:period></xbrli:context>
+ <in-bse-shp:WhetherAnySharesHeldByPromotersAreEncumberedUnderPledged contextRef="MainI">false</in-bse-shp:WhetherAnySharesHeldByPromotersAreEncumberedUnderPledged>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="ShareholdingOfPromoterAndPromoterGroup_ContextI" unitRef="pure" decimals="INF">0.5044</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:NumberOfShares contextRef="ShareholdingOfPromoterAndPromoterGroup_ContextI" unitRef="shares" decimals="INF">6715496096</in-bse-shp:NumberOfShares>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="InstitutionsForeign_ContextI" unitRef="pure" decimals="INF">0.1667</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="InstitutionsDomestic_ContextI" unitRef="pure" decimals="INF">0.2172</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="MutualFundsOrUTI_ContextI" unitRef="pure" decimals="INF">0.1031</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="NonInstitutions_ContextI" unitRef="pure" decimals="INF">0.1117</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="PublicShareholding_ContextI" unitRef="pure" decimals="INF">0.4956</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:NameOfTheShareholder contextRef="D_MutualFundsOrUTI_Context15">SBI Mutual Fund   - Large Cap</in-bse-shp:NameOfTheShareholder>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="MutualFundsOrUTI_Context15" unitRef="pure" decimals="INF">0.0185</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:NumberOfShares contextRef="MutualFundsOrUTI_Context15" unitRef="shares" decimals="INF">250000000</in-bse-shp:NumberOfShares>
+ <in-bse-shp:NameOfTheShareholder contextRef="BodiesCorporate_Context3">Srichakra Commercials LLP</in-bse-shp:NameOfTheShareholder>
+ <in-bse-shp:TypeOfPromoterShareholding contextRef="BodiesCorporate_Context3">Promoter Group</in-bse-shp:TypeOfPromoterShareholding>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="BodiesCorporate_Context3" unitRef="pure" decimals="INF">0.0814</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+ <in-bse-shp:NameOfTheShareholder contextRef="IndividualsOrHinduUndividedFamily_Context7">ASHISH KACHOLIA</in-bse-shp:NameOfTheShareholder>
+ <in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares contextRef="IndividualsOrHinduUndividedFamily_Context7" unitRef="pure" decimals="INF">0.0112</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>
+</xbrli:xbrl>

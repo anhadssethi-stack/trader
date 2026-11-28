@@ -43,6 +43,34 @@ CREATE TABLE IF NOT EXISTS scan_results (
 );
 CREATE TABLE IF NOT EXISTS meta (key VARCHAR PRIMARY KEY, value VARCHAR);
 CREATE TABLE IF NOT EXISTS bt_runs (run_id VARCHAR PRIMARY KEY, created TIMESTAMP, meta JSON);
+CREATE TABLE IF NOT EXISTS fund_info (
+    symbol VARCHAR PRIMARY KEY, source VARCHAR, basis VARCHAR, fetched DATE, sector VARCHAR,
+    industry VARCHAR, is_financial BOOLEAN, ratios JSON, notes JSON
+);
+CREATE TABLE IF NOT EXISTS fund_statements (
+    symbol VARCHAR, statement VARCHAR, item VARCHAR, period DATE, value DOUBLE, source VARCHAR,
+    PRIMARY KEY (symbol, statement, item, period)
+);
+CREATE TABLE IF NOT EXISTS shareholding (
+    symbol VARCHAR, quarter_end DATE, category VARCHAR, pct DOUBLE, source VARCHAR,
+    PRIMARY KEY (symbol, quarter_end, category, source)
+);
+CREATE TABLE IF NOT EXISTS holders (
+    symbol VARCHAR, quarter_end DATE, name VARCHAR, category VARCHAR, pct DOUBLE, shares DOUBLE,
+    source VARCHAR, PRIMARY KEY (symbol, quarter_end, name)
+);
+CREATE TABLE IF NOT EXISTS pledges (
+    symbol VARCHAR, as_of DATE, promoter_pct DOUBLE, pledge_pct DOUBLE, source VARCHAR,
+    PRIMARY KEY (symbol, as_of)
+);
+CREATE TABLE IF NOT EXISTS deals (
+    date DATE, symbol VARCHAR, kind VARCHAR, client VARCHAR, side VARCHAR, qty DOUBLE, price DOUBLE,
+    source VARCHAR, PRIMARY KEY (date, symbol, kind, client, side, qty, price)
+);
+CREATE TABLE IF NOT EXISTS flows (
+    date DATE, category VARCHAR, buy_cr DOUBLE, sell_cr DOUBLE, net_cr DOUBLE, source VARCHAR,
+    PRIMARY KEY (date, category)
+);
 """
 
 SOURCE_RANK = {"nse_udiff": 0, "nse_legacy": 1, "nse_full_bhav": 2, "nse_index_close": 0,
@@ -132,6 +160,118 @@ class Store:
             "data": [json.dumps(r, default=str) for r in results.to_dict("records")],
         })
         return self._upsert("scan_results", rows)
+
+    # ------------------------------------------------------------ fundamentals / smart money
+    def save_fundamentals(self, f) -> None:
+        """Replace everything stored for one company with a freshly parsed Fundamentals."""
+        sym = f.symbol
+        self.con.execute("DELETE FROM fund_info WHERE symbol = ?", [sym])
+        self.con.execute("INSERT INTO fund_info VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         [sym, f.source, f.basis, f.fetched, f.sector, f.industry, bool(f.is_financial),
+                          json.dumps(f.ratios, default=str), json.dumps(f.notes)])
+        self.con.execute("DELETE FROM fund_statements WHERE symbol = ?", [sym])
+        if not f.statements.empty:
+            st = f.statements.dropna(subset=["value", "period"]).assign(symbol=sym, source=f.source)
+            st["period"] = pd.to_datetime(st["period"]).dt.date
+            self._upsert("fund_statements", st.drop_duplicates(["statement", "item", "period"], keep="last")[
+                ["symbol", "statement", "item", "period", "value", "source"]])
+        if not f.shareholding.empty:
+            self.upsert_shareholding(f.shareholding.assign(symbol=sym, source=f.source))
+        if not f.holders.empty:
+            self.upsert_holders(f.holders.assign(symbol=sym, source=f.source))
+
+    def load_fundamentals(self, symbol: str):
+        from ..fundamentals.model import Fundamentals
+        r = self.con.execute("SELECT * FROM fund_info WHERE symbol = ?", [symbol]).fetchone()
+        if r is None:
+            return None
+        cols = [d[0] for d in self.con.description]
+        info = dict(zip(cols, r))
+        st = self.q("SELECT statement, item, period, value FROM fund_statements WHERE symbol = ?", [symbol])
+        st["period"] = pd.to_datetime(st["period"])
+        sh = self.shareholding_all([symbol])[["quarter_end", "category", "pct", "source"]]
+        ho = self.q("SELECT quarter_end, name, category, pct, shares FROM holders WHERE symbol = ?", [symbol])
+        ratios = json.loads(info["ratios"]) if info["ratios"] else {}
+        pl = self.q("SELECT pledge_pct FROM pledges WHERE symbol = ? ORDER BY as_of DESC LIMIT 1", [symbol])
+        if len(pl) and ratios.get("pledge_pct") is None:
+            ratios["pledge_pct"] = float(pl["pledge_pct"].iloc[0])
+        return Fundamentals(symbol=symbol, source=info["source"], basis=info["basis"], fetched=info["fetched"],
+                            statements=st, ratios=ratios, sector=info["sector"], industry=info["industry"],
+                            is_financial=bool(info["is_financial"]), shareholding=sh, holders=ho,
+                            notes=json.loads(info["notes"]) if info["notes"] else [])
+
+    def fundamentals_fetched(self) -> dict[str, date]:
+        df = self.q("SELECT symbol, fetched FROM fund_info")
+        return {r.symbol: pd.Timestamp(r.fetched).date() for r in df.itertuples()}
+
+    def upsert_shareholding(self, df: pd.DataFrame) -> int:
+        df = df.copy()
+        df["quarter_end"] = pd.to_datetime(df["quarter_end"]).dt.date
+        return self._upsert("shareholding", df.drop_duplicates(
+            ["symbol", "quarter_end", "category", "source"], keep="last")[
+            ["symbol", "quarter_end", "category", "pct", "source"]])
+
+    def upsert_holders(self, df: pd.DataFrame) -> int:
+        df = df.copy()
+        df["quarter_end"] = pd.to_datetime(df["quarter_end"]).dt.date
+        if "shares" not in df:
+            df["shares"] = None
+        return self._upsert("holders", df.drop_duplicates(["symbol", "quarter_end", "name"], keep="last")[
+            ["symbol", "quarter_end", "name", "category", "pct", "shares", "source"]])
+
+    def upsert_pledges(self, df: pd.DataFrame) -> int:
+        df = df.copy()
+        df["as_of"] = pd.to_datetime(df["as_of"]).dt.date
+        return self._upsert("pledges", df.drop_duplicates(["symbol", "as_of"], keep="last")[
+            ["symbol", "as_of", "promoter_pct", "pledge_pct", "source"]])
+
+    def upsert_deals(self, df: pd.DataFrame) -> int:
+        if df is None or df.empty:
+            return 0
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        return self._upsert("deals", df.drop_duplicates(
+            ["date", "symbol", "kind", "client", "side", "qty", "price"])[
+            ["date", "symbol", "kind", "client", "side", "qty", "price", "source"]])
+
+    def upsert_flows(self, df: pd.DataFrame) -> int:
+        if df is None or df.empty:
+            return 0
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        return self._upsert("flows", df.drop_duplicates(["date", "category"], keep="last")[
+            ["date", "category", "buy_cr", "sell_cr", "net_cr", "source"]])
+
+    # When two sources give the same holder category (Screener, NSE's filing list, the
+    # XBRL filing itself) their numbers differ slightly, so mixing them would create fake
+    # quarter-on-quarter changes. One source is used per stock and category: the one with
+    # the most quarters (ties: the official XBRL filing first).
+    SHP_SOURCE_RANK = {"nse_xbrl": 0, "nse_master": 1, "screener": 2}
+
+    def shareholding_all(self, symbols: list[str] | None = None) -> pd.DataFrame:
+        sql, params = "SELECT * FROM shareholding", []
+        if symbols:
+            sql += f" WHERE symbol IN ({','.join('?' * len(symbols))})"
+            params = symbols
+        df = self.q(sql, params)
+        if df.empty:
+            return df
+        n = df.groupby(["symbol", "category", "source"]).size().rename("n").reset_index()
+        n["rank"] = n["source"].map(self.SHP_SOURCE_RANK).fillna(9)
+        best = n.sort_values(["n", "rank"], ascending=[False, True]).drop_duplicates(["symbol", "category"])
+        df = df.merge(best[["symbol", "category", "source"]], on=["symbol", "category", "source"])
+        return df.sort_values(["symbol", "quarter_end", "category"]).reset_index(drop=True)
+
+    def holders_all(self) -> pd.DataFrame:
+        return self.q("SELECT * FROM holders ORDER BY symbol, quarter_end")
+
+    def deals_all(self, since: date | None = None) -> pd.DataFrame:
+        if since:
+            return self.q("SELECT * FROM deals WHERE date >= ? ORDER BY date DESC", [since])
+        return self.q("SELECT * FROM deals ORDER BY date DESC")
+
+    def flows_all(self) -> pd.DataFrame:
+        return self.q("SELECT * FROM flows ORDER BY date")
 
     # ------------------------------------------------------------ backtests
     def fund_symbols(self) -> set[str]:

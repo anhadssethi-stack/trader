@@ -4,6 +4,7 @@ duckdb>=1.1
 requests>=2.31
 PyYAML>=6.0
 yfinance>=0.2.50
+beautifulsoup4>=4.12        # Screener page parsing (already installed with yfinance)
 streamlit>=1.50
 plotly>=5.22
 pytest>=8.0
