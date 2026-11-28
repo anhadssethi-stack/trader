@@ -1,4 +1,4 @@
-"""NSE Research dashboard (Phase 1: technical scanner).
+"""NSE Research dashboard: scanner, charts, fundamentals, smart money, backtests.
 
 Run:  streamlit run app/streamlit_app.py
 """
@@ -94,6 +94,26 @@ def load_health():
     return _with_store(f)
 
 
+@st.cache_data(ttl=300)
+def load_fundamentals_screen():
+    from nse_research.fundamentals.screen import build_screen
+    return _with_store(lambda s: build_screen(S, s))
+
+
+@st.cache_data(ttl=300)
+def load_fund_detail(symbol: str):
+    return _with_store(lambda s: s.load_fundamentals(symbol))
+
+
+@st.cache_data(ttl=300)
+def load_smart_money():
+    def f(s: Store):
+        return dict(shareholding=s.shareholding_all(), holders=s.holders_all(), deals=s.deals_all(),
+                    flows=s.flows_all(),
+                    shp_checked=s.q("SELECT max(value) AS v FROM meta WHERE key LIKE 'shp_checked:%'")["v"].iloc[0])
+    return _with_store(f)
+
+
 def header(ov):
     st.warning(DISCLAIMER, icon="⚠️")
     if ov and ov["demo"]:
@@ -137,6 +157,12 @@ def page_scanner(ov):
     if fno_only:
         df = df[df["fno"]]
 
+    fs = load_fundamentals_screen()
+    if fs is not None and not fs.empty:
+        fsi = fs.set_index("symbol")
+        df = df.assign(f_red=df["symbol"].map(fsi["n_red"]), f_green=df["symbol"].map(fsi["n_green"]))
+        max_red = st.slider("Maximum fundamental red flags (stocks without fundamentals are kept)", 0, 8, 8)
+        df = df[df["f_red"].isna() | (df["f_red"] <= max_red)]
     rs_cols = [f"rs{n}" for n in S["scanner"]["rs_lookbacks"]]
     view = pd.DataFrame({
         "Symbol": df["symbol"], "Company": df["company"], "Industry": df["industry"],
@@ -146,6 +172,7 @@ def page_scanner(ov):
         "ATR %": df["atr_pct"], "# Bull": df["n_bullish"], "# Bear": df["n_bearish"],
         "Bullish signals": df["bullish"].apply(fmt_list), "Bearish signals": df["bearish"].apply(fmt_list),
         "Info": df["info"].apply(fmt_list), "F&O": df["fno"], "Stale": df.get("stale", False),
+        **({"Fund. red": df["f_red"], "Fund. green": df["f_green"]} if "f_red" in df else {}),
     })
     st.write(f"**{len(view)}** stocks match.")
     st.dataframe(
@@ -203,6 +230,47 @@ def show_reasons(row):
     if row.get("n_bearish", 0) and not row.get("short_possible", False):
         st.caption("Bearish signals here can't be used as a multi-day short: the stock is not in F&O "
                    "(cash-market shorts must be squared off the same day). Treat them as exit/avoid.")
+    show_fund_flags(row["symbol"])
+    show_smart_money_for(row["symbol"])
+
+
+def show_fund_flags(sym: str):
+    fs = load_fundamentals_screen()
+    if fs is None or fs.empty or sym not in set(fs["symbol"]):
+        st.caption("No fundamentals stored for this stock yet (run `python -m nse_research.cli fundamentals`).")
+        return
+    r = fs[fs["symbol"] == sym].iloc[0]
+    st.markdown(f"**Fundamentals** ({r['source']}, {r['basis']}, fetched {r['fetched']})")
+    if not r["flags"]:
+        st.markdown("- No red or green fundamental flag.")
+    for fl in sorted(r["flags"], key=lambda x: x["side"] != "red"):
+        st.markdown(f"- {'🔴' if fl['side'] == 'red' else '🟢'} **{fl['label']}**: {fl['reason']}")
+
+
+def show_smart_money_for(sym: str):
+    sm = load_smart_money()
+    if sm is None:
+        return
+    from nse_research.smartmoney.tracker import holder_changes, recent_deals, stake_changes
+    c = S["smart_money"]
+    stakes = stake_changes(sm["shareholding"][sm["shareholding"]["symbol"] == sym], c["min_stake_change_pp"])
+    hold = holder_changes(sm["holders"][sm["holders"]["symbol"] == sym], c["investors"], c["min_holder_change_pp"])
+    deals = recent_deals(sm["deals"][sm["deals"]["symbol"] == sym], c["investors"], c["deals_lookback_days"])
+    if stakes.empty and hold.empty and deals.empty:
+        return
+    st.markdown("**Smart money** (delayed data: shareholding is quarterly; deals are end of day)")
+    for r in stakes.itertuples():
+        st.markdown(f"- {r.holder} {'raised' if r.change_pp > 0 else 'cut'} their stake "
+                    f"{r.prev_pct:.2f}% → {r.pct:.2f}% ({r.change_pp:+.2f} pts) in the quarter to "
+                    f"{pd.Timestamp(r.quarter_end):%d %b %Y}.")
+    for r in hold.head(8).itertuples():
+        who = f"{r.holder}" + (f" ({r.known_investor})" if isinstance(r.known_investor, str) else "")
+        st.markdown(f"- {who}: {r.event}, {_pct(r.prev_pct, 2)} → {_pct(r.pct, 2)} "
+                    f"(quarter to {pd.Timestamp(r.quarter_end):%d %b %Y}).")
+    for r in deals.head(8).itertuples():
+        st.markdown(f"- {pd.Timestamp(r.date):%d %b %Y} {r.kind} deal: {r.client} "
+                    f"{'bought' if r.side == 'BUY' else 'sold'} {r.qty:,.0f} shares at ₹{r.price:,.2f} "
+                    f"(₹{r.value_cr:,.1f} Cr).")
 
 
 def page_chart(ov):
@@ -466,6 +534,169 @@ def page_backtest(_ov):
         st.download_button("Download trades CSV", show.to_csv(index=False), f"{sid}_trades.csv", "text/csv")
 
 
+FUND_COLS = {
+    "symbol": "Symbol", "company": "Company", "industry": "Industry", "price": "Price", "pe": "P/E",
+    "sector_pe_median": "Sector P/E", "pb": "P/B", "roce_pct": "ROCE %", "roe_pct": "ROE %",
+    "debt_to_equity": "Debt/Eq", "sales_cagr_3y": "Sales 3y %", "profit_cagr_3y": "Profit 3y %",
+    "qtr_profit_yoy": "Qtr profit YoY %", "cfo_to_profit_3y": "CFO/Profit 3y", "promoter_pct": "Promoter %",
+    "promoter_chg_4q": "Promoter Δ4q", "pledge_pct": "Pledged %", "n_red": "# Red", "n_green": "# Green",
+}
+
+
+def page_fundamentals(ov):
+    st.header("Fundamental screen")
+    fs = load_fundamentals_screen()
+    if fs is None or fs.empty:
+        st.info("No fundamentals yet. Run `python -m nse_research.cli fundamentals` (about 20 minutes for the "
+                "Nifty 500 the first time; after that the daily job keeps them fresh).")
+        return
+    st.caption(f"{len(fs)} companies. Results are as reported (₹ crore), from Screener.in with Yahoo as a fallback; "
+               "they change once a quarter and are usually 1-2 months old. Each flag is one threshold from "
+               "settings.yaml and shows its numbers. There is no combined score. Banks/NBFCs/insurers skip the "
+               "debt, ROCE and cash-flow flags and use ROE instead.")
+    all_red = sorted({x for v in fs["red_flags"] for x in v})
+    all_green = sorted({x for v in fs["green_flags"] for x in v})
+    c1, c2, c3 = st.columns(3)
+    max_red = c1.slider("Maximum red flags", 0, max(1, int(fs["n_red"].max())), 0)
+    no_red = c2.multiselect("Must NOT have", all_red)
+    need_green = c3.multiselect("Must have", all_green)
+    inds = st.multiselect("Industry", sorted(fs["industry"].dropna().unique()))
+    df = fs[fs["n_red"] <= max_red]
+    if no_red:
+        df = df[df["red_flags"].apply(lambda v: not set(no_red) & set(v))]
+    if need_green:
+        df = df[df["green_flags"].apply(lambda v: set(need_green) <= set(v))]
+    if inds:
+        df = df[df["industry"].isin(inds)]
+    view = df.reindex(columns=list(FUND_COLS)).rename(columns=FUND_COLS)
+    view["Red flags"] = df["red_flags"].apply(fmt_list)
+    view["Green flags"] = df["green_flags"].apply(fmt_list)
+    st.write(f"**{len(view)}** companies match.")
+    st.dataframe(view, hide_index=True, width="stretch", height=480,
+                 column_config={c: st.column_config.NumberColumn(format="%.2f") for c in FUND_COLS.values()
+                                if c not in ("Symbol", "Company", "Industry", "# Red", "# Green")})
+    st.download_button("Download as CSV", view.to_csv(index=False), "fundamentals.csv", "text/csv")
+
+    st.subheader("Company detail")
+    pick = st.selectbox("Company", df["symbol"].tolist(), index=None, placeholder="Choose a company")
+    if not pick:
+        return
+    r = df[df["symbol"] == pick].iloc[0]
+    f = load_fund_detail(pick)
+    st.caption(f"Source: {r['source']} ({r['basis']} accounts), fetched {r['fetched']}. "
+               + (f"[Open on Screener](https://www.screener.in/company/{pick}/)" if r["source"] == "screener" else ""))
+    show_fund_flags(pick)
+    with st.expander("Every metric and how it is calculated"):
+        rows = [
+            ("Sales growth, 3y / 5y (% a year)", r["sales_cagr_3y"], r["sales_cagr_5y"], "CAGR of annual sales"),
+            ("Profit growth, 3y / 5y (% a year)", r["profit_cagr_3y"], r["profit_cagr_5y"],
+             "CAGR of annual net profit (blank if either end is a loss)"),
+            ("Latest quarter vs a year ago: sales / profit (%)", r["qtr_sales_yoy"], r["qtr_profit_yoy"],
+             f"quarter ending {r['latest_quarter']}"),
+            ("ROCE % / ROE %", r["roce_pct"], r["roe_pct"],
+             "ROCE = EBIT / (equity + borrowings); ROE = profit / average equity. " + str(r["metric_sources"])),
+            ("Debt/equity / interest cover", r["debt_to_equity"], r["interest_cover"],
+             "borrowings / (share capital + reserves); (PBT + interest) / interest, last 12 months"),
+            ("Operating cash / profit, 3y / free cash flow 3y (₹ Cr)", r["cfo_to_profit_3y"], r["fcf_3y_cr"],
+             "sum of 3 years' operating cash flow / sum of 3 years' net profit"),
+            ("Debtor days now / 3 years ago", r["debtor_days"], r["debtor_days_3y_ago"], "receivables / sales × 365"),
+            ("P/E / sector median", r["pe"], r["sector_pe_median"],
+             f"price / last 4 quarters' EPS; median of {r['sector_peers']} profitable peers in {r['peer_group']}"),
+            ("Promoter % / change over 4 quarters", r["promoter_pct"], r["promoter_chg_4q"],
+             f"shareholding quarter {r['shareholding_quarter']}"),
+            ("Pledged % of promoter shares", r["pledge_pct"], None, "NSE pledge disclosures"),
+        ]
+        st.dataframe(pd.DataFrame(rows, columns=["Metric", "Value", "Second value", "How"]).round(2),
+                     hide_index=True, width="stretch")
+    if f is not None:
+        c1, c2 = st.columns(2)
+        ann = pd.DataFrame({"Sales": f.series("annual", "sales"), "Net profit": f.series("annual", "net_profit")})
+        if not ann.empty:
+            fig = go.Figure([go.Bar(x=ann.index, y=ann[c], name=c) for c in ann])
+            fig.update_layout(title="Annual (₹ Cr)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            c1.plotly_chart(fig, width="stretch")
+        q = pd.DataFrame({"Sales": f.series("quarterly", "sales"), "Net profit": f.series("quarterly", "net_profit")})
+        if not q.empty:
+            fig = go.Figure([go.Bar(x=q.index, y=q[c], name=c) for c in q])
+            fig.update_layout(title="Quarterly (₹ Cr)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            c2.plotly_chart(fig, width="stretch")
+        sh = f.shareholding
+        if not sh.empty:
+            fig = go.Figure([go.Scatter(x=pd.to_datetime(g["quarter_end"]), y=g["pct"], name=cat, mode="lines+markers")
+                             for cat, g in sh.groupby("category")])
+            fig.update_layout(title="Shareholding (% of shares)", height=320, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, width="stretch")
+    show_smart_money_for(pick)
+
+
+def _r2(df: pd.DataFrame) -> pd.DataFrame:
+    """Round number columns only (rounding a date column warns)."""
+    return df.round({c: 2 for c in df.select_dtypes("number").columns})
+
+
+def page_smart_money(ov):
+    from nse_research.smartmoney.tracker import deal_summary, holder_changes, recent_deals, stake_changes
+    st.header("Smart-money tracker")
+    sm = load_smart_money()
+    c = S["smart_money"]
+    st.info("**This data is delayed.** Shareholding patterns are quarterly and companies file them up to 21 days "
+            "after the quarter ends, so a stake change can be 3 to 15 weeks old when you see it. Bulk and block "
+            "deals are published after market close. FII/DII flows are NSE's provisional figures for the day. "
+            "A stake change says who bought, not what happens next.", icon="⏱️")
+    if sm is None:
+        return
+    uni = load_overview()["scan"]
+    names = dict(zip(uni["symbol"], uni["company"])) if not uni.empty else {}
+    t1, t2, t3, t4 = st.tabs(["Stake changes", "Well-known investors", "Bulk & block deals", "FII / DII flows"])
+    with t1:
+        cats = st.multiselect("Holders", ["fii", "dii", "mf", "promoter"], default=["fii", "dii", "mf"],
+                              format_func=lambda x: {"fii": "FIIs", "dii": "DIIs", "mf": "Mutual funds",
+                                                     "promoter": "Promoters"}[x])
+        mn = st.number_input("Smallest change (percentage points)", 0.0, 10.0, float(c["min_stake_change_pp"]), 0.25)
+        ch = stake_changes(sm["shareholding"], mn, tuple(cats))
+        way = st.radio("Direction", ["Increased", "Decreased", "Both"], horizontal=True)
+        if way == "Increased":
+            ch = ch[ch["change_pp"] > 0]
+        elif way == "Decreased":
+            ch = ch[ch["change_pp"] < 0].sort_values("change_pp")
+        ch = ch.assign(company=ch["symbol"].map(names))
+        st.write(f"**{len(ch)}** changes in each stock's latest filed quarter vs the one before.")
+        st.dataframe(_r2(ch[["symbol", "company", "holder", "prev_pct", "pct", "change_pp", "quarter_end"]])
+                     .rename(columns={"prev_pct": "Before %", "pct": "Now %", "change_pp": "Change (pts)",
+                                      "quarter_end": "Quarter"}), hide_index=True, width="stretch")
+    with t2:
+        only = st.checkbox("Only names on my watch list (settings.yaml → smart_money.investors)", value=True)
+        hc = holder_changes(sm["holders"], c["investors"], c["min_holder_change_pp"], only_known=only)
+        hc = hc.assign(company=hc["symbol"].map(names))
+        st.caption("Holders named in the shareholding filing (all promoters, and other holders above 1%). "
+                   "A holder below 1% is not named, so 'exited / below 1%' can mean either.")
+        st.dataframe(_r2(hc[["symbol", "company", "holder", "known_investor", "event", "prev_pct", "pct",
+                             "change_pp", "quarter_end"]]), hide_index=True, width="stretch")
+    with t3:
+        days = st.slider("Last N days", 7, 365, int(c["deals_lookback_days"]))
+        rd = recent_deals(sm["deals"], c["investors"], days)
+        if rd.empty:
+            st.write("No deals stored yet. They are collected by the daily job from NSE's end-of-day files.")
+        else:
+            st.markdown("**Net buying by deal clients, per stock**")
+            st.dataframe(_r2(deal_summary(rd)), hide_index=True, width="stretch")
+            st.markdown("**All deals**")
+            st.dataframe(_r2(rd), hide_index=True, width="stretch", height=400)
+    with t4:
+        fl = sm["flows"]
+        if fl.empty:
+            st.write("No flows stored yet. NSE only publishes the latest day, so the history builds up from the "
+                     "first daily run.")
+        else:
+            fl = fl.assign(date=pd.to_datetime(fl["date"]))
+            fig = go.Figure([go.Bar(x=g["date"], y=g["net_cr"], name=cat) for cat, g in fl.groupby("category")])
+            fig.update_layout(barmode="group", height=360, title="Net buying in the cash market (₹ Cr)",
+                              margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, width="stretch")
+            last20 = fl[fl["date"] >= fl["date"].max() - pd.Timedelta(days=30)].groupby("category")["net_cr"].sum()
+            st.write("Last 30 days, net: " + ", ".join(f"{k} ₹{v:,.0f} Cr" for k, v in last20.items()))
+
+
 def page_settings(_ov):
     st.header("Settings in use")
     st.caption("Edit config/settings.yaml (or create config/settings.local.yaml) and restart the app.")
@@ -478,7 +709,8 @@ def page_settings(_ov):
     st.json(dict(S), expanded=False)
 
 
-PAGES = {"Scanner": page_scanner, "Stock chart": page_chart, "Backtest": page_backtest,
+PAGES = {"Scanner": page_scanner, "Stock chart": page_chart, "Fundamentals": page_fundamentals,
+         "Smart money": page_smart_money, "Backtest": page_backtest,
          "Data health": page_health, "Settings": page_settings}
 
 if "nav_to" in st.session_state:  # must be set before the radio widget is drawn
@@ -493,7 +725,7 @@ with st.sidebar:
     if st.button("Reload data"):
         st.cache_data.clear()
         st.rerun()
-    st.caption("Phase 2 · scanner + backtest")
+    st.caption("Phase 3 · scanner, backtest, fundamentals, smart money")
 
 header(ov)
 if ov is None:

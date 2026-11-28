@@ -9,8 +9,8 @@ Built in phases, and each phase is confirmed before the next one starts:
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Data layer, technical scanner on Nifty 500, dashboard | done |
-| 2 | Backtest engine and win-rate statistics | **this release** |
-| 3 | Fundamentals and smart-money tracker | not started |
+| 2 | Backtest engine and win-rate statistics | done |
+| 3 | Fundamentals and smart-money tracker | **this release** |
 | 4 | Sector rotation, trade plans, position sizing | not started |
 | 5 | Automation, alerts, forward scenarios | not started |
 
@@ -70,6 +70,17 @@ clock. If your Mac isn't set to India time, edit `HOUR`/`MINUTE` in the script f
 is asleep at 19:45, the job runs when it wakes up. Logs are in `data/logs/daily.log`. To test it
 now: `launchctl start com.nseresearch.daily`.
 
+Phase 3 data, the first time (each can be stopped and restarted; it carries on where it stopped):
+
+```bash
+python -m nse_research.cli fundamentals    # results + ratios for the universe (~20 min the first time)
+python -m nse_research.cli smart-money     # shareholding filings, bulk/block deals, FII/DII (~25 min)
+```
+
+After that the `daily` job keeps them fresh by itself: every day it stores the day's bulk/block
+deals and FII/DII flows, and re-fetches fundamentals and filings for up to 100 stocks that are
+more than 7 days old (`smart_money.daily_limit`). Add `--symbols RELIANCE TCS` to try a few first.
+
 Other commands: `python -m nse_research.cli health` shows what was fetched, from where, and
 what failed. `scan` re-runs the scanner without downloading anything.
 
@@ -105,9 +116,19 @@ F&O stocks (`short_requires_fno: true`). Position sizing itself arrives in Phase
 | **Nifty 500 / F&O lists** | Universe, shortable stocks | Only the **current** list is public, so past index membership isn't available (a survivorship issue for Phase 2). The list changes twice a year. | Refreshed weekly. If a refresh fails, the stored list is kept. |
 | **yfinance (Yahoo, `.NS`)** | Fast history, fallback prices | Unofficial and rate-limited, and breaks when Yahoo changes. No delivery data. Its `Close` is split-adjusted *as of today*. It sometimes misses or misdates Indian bonus issues. Delisted stocks disappear. Volume can differ from NSE's. | Prices are converted back to raw using Yahoo's split list, so they match NSE. Rows are tagged `source=yahoo`, and NSE always replaces them when it becomes available. The daily run re-tries NSE for Yahoo-filled days from the last 14 days. |
 
-Coming in later phases: NSE/BSE corporate filings, shareholding patterns (quarterly, up to
-about 21 days after quarter end), bulk and block deals (next day, large trades only), and FII/DII
-flows (daily market-wide totals, not per stock).
+Phase 3 sources:
+
+| Source | Used for | Limits and failure modes | How the app copes |
+|---|---|---|---|
+| **Screener.in company page** (`/company/SYMBOL/consolidated/`) | 12 years of annual results, 13 quarters, balance sheet, cash flow, ratios (debtor days, ROCE), quarterly shareholding (promoter/FII/DII/public), industry | A website, not an API: layout changes break parsing. No login needed, but be polite. Values are ₹ crore. Companies without subsidiaries have an empty consolidated page. | One page per stock per 7 days, 2 s apart, cached. Falls back to the standalone page, then to Yahoo. A page with no tables is logged as failed. |
+| **Yahoo fundamentals (yfinance)** | Fallback when Screener fails | About 4 years of annual data, 5 quarters, no shareholding, no debtor days for many companies | Used only when Screener fails. Rows are tagged `source=yahoo`. |
+| **NSE shareholding filings** (`corporate-share-holdings-master` API + the XBRL filing in NSE's archive) | Promoter % for every quarter since ~2014; FII, DII, **mutual fund**, government and non-institution %; every promoter and every holder above 1% by name; whether promoter shares are pledged | Quarterly, filed up to 21 days after quarter end. The list API needs NSE cookies and is unofficial. Each XBRL file is ~0.5 MB. Holders below 1% are not named. | The two latest filings per stock are read; filings are cached forever (a revision gets a new file). One source is used per stock and holder category so two sources' small differences don't show up as fake changes. |
+| **NSE pledge API** | % of promoter shares pledged | Unofficial; answers an empty list when nothing is pledged | Empty + "no pledge" in the filing = 0%. Otherwise blank (never guessed). |
+| **NSE bulk.csv / block.csv** (archive) | Bulk and block deals | Latest trading day only. NSE's history API for older deals often answers 503. | Stored daily, so the history builds up from the first run. The history API is tried on each run until it works once. |
+| **NSE `fiidiiTradeReact`** | FII/DII cash-market buy/sell/net (₹ Cr) | Latest day only, provisional, market-wide (not per stock) | Stored daily. |
+
+NSE's per-stock quote API (`/api/quote-equity`) refuses scripts (403), so sector and industry
+come from Screener's classification.
 
 ### How fallback works
 
@@ -293,6 +314,73 @@ All numbers below are in `config/settings.yaml` under `backtest:` and `costs:`.
 
 ---
 
+## 4c. Fundamentals and smart money (Phase 3)
+
+### Fundamental screen
+
+Every metric is a plain formula on reported numbers, so you can check it against the company's
+results. The **Fundamentals** page lists them with the formula next to each value.
+
+| Metric | Formula |
+|---|---|
+| Sales / profit growth | CAGR of annual sales / net profit over 3 and 5 years (blank if either end is a loss) |
+| Quarter growth | latest quarter vs the same quarter a year earlier |
+| ROCE | Screener's ROCE row; else (PBT + interest) / (equity + borrowings) |
+| ROE | net profit / average of the last two years' equity (share capital + reserves) |
+| Debt / equity | borrowings / (share capital + reserves), latest balance sheet |
+| Interest cover | (PBT + interest) / interest, last 12 months |
+| Cash conversion | 3 years of operating cash flow / 3 years of net profit |
+| Free cash flow | Screener's FCF row over 3 years (else operating + investing cash flow) |
+| Debtor days | receivables / sales × 365, now vs 3 years ago |
+| P/E | today's close / last 4 quarters' EPS |
+| P/E vs sector | P/E / median P/E of profitable stocks in the same industry in the stored universe (needs 4+ peers; else the broader industry group) |
+| Promoter holding, pledge | latest filing, change over 4 quarters; % of promoter shares pledged |
+
+Flags (thresholds in `fundamentals.flags` in settings.yaml):
+
+| Red flag | Fires when |
+|---|---|
+| Promoter shares pledged | pledged ≥ 10% of promoter shares |
+| Promoter stake falling | down ≥ 2 points over 4 quarters |
+| Sales shrinking | 3-year sales CAGR below 0 |
+| Losses in recent quarters | net loss in 2+ of the last 4 quarters |
+| Latest quarter profit down sharply | down 30%+ vs a year earlier |
+| Low return on capital | ROCE < 10% (ROE < 10% for banks/NBFCs/insurers) |
+| High debt | debt/equity > 1 (not for lenders) |
+| Interest barely covered | interest cover < 3× (not for lenders) |
+| Profits not turning into cash | 3-year operating cash flow < 0.6× profit (not for lenders) |
+| Customers paying slower | debtor days up 30+ over 3 years |
+| Expensive vs sector | P/E ≥ 1.5× the industry median |
+| Loss-making | last 12 months' profit below 0 |
+
+Green flags: strong 3-year growth (sales and profit both 15%+ a year), ROCE 20%+ (ROE 18%+ for
+lenders), almost debt-free (D/E ≤ 0.1), operating cash ≥ profit, promoter stake up 2+ points,
+P/E ≤ 0.7× the industry median.
+
+Banks, NBFCs and insurers borrow and lend as their business, so the debt, interest-cover, ROCE and
+cash-flow rules don't apply to them. They are spotted from their result layout (a "Financing
+Profit" or "Deposits" row).
+
+The Scanner page shows the number of red and green fundamental flags next to each stock, has a
+"maximum red flags" filter, and each stock's reasons now include its fundamental flags and any
+smart-money activity.
+
+### Smart-money tracker
+
+**All of it is delayed.** Shareholding is quarterly and filed up to 21 days after the quarter,
+so a change can be 3 to 15 weeks old. Deals are end of day. A stake change says who bought, not
+what happens next.
+
+- **Stake changes**: FII, DII, mutual fund and promoter % in each stock's latest filed quarter vs
+  the one before, when the change is at least 0.5 points (`smart_money.min_stake_change_pp`).
+- **Well-known investors**: every holder named in the latest two filings (all promoters and
+  anyone above 1%): new above 1%, increased, reduced, or "exited / below 1%". Names are matched
+  against your watch list in `smart_money.investors` (regular expressions on the name as filed,
+  e.g. `KACHOLIA` or `MUKUL MAHAVIR AGRAWAL`). Edit the list freely.
+- **Bulk and block deals**: the last 90 days, each with client, side, quantity, price and value,
+  plus a per-stock net buying summary. Watch-list names are marked.
+- **FII / DII flows**: daily net buying in the cash market, market-wide.
+
 ## 5. Project layout
 
 ```
@@ -315,7 +403,16 @@ nse_research/
   backtest/engine.py          trade simulator, sizing, costs applied per trade
   backtest/costs.py           Indian brokerage, STT, exchange, SEBI, stamp, GST, DP
   backtest/stats.py           win rate + CI, expectancy, drawdown, out-of-sample, walk-forward
-app/streamlit_app.py          dashboard: Scanner, Stock chart, Backtest, Data health, Settings
+  fundamentals/model.py       the common shape every fundamentals source is parsed into
+  fundamentals/sources/       Screener page parser, Yahoo fallback
+  fundamentals/metrics.py     growth, ROE/ROCE, debt, cash conversion, P/E ...
+  fundamentals/flags.py       red/green flags, P/E vs sector median
+  fundamentals/screen.py      metrics + flags for every stored company
+  fundamentals/pipeline.py    fetch with fallback and a 7-day refresh
+  smartmoney/nse.py           shareholding list + XBRL filing, pledges, deals, FII/DII parsers
+  smartmoney/tracker.py       stake changes, named-holder changes, deal summaries
+  smartmoney/pipeline.py      daily deals/flows, weekly filings
+app/streamlit_app.py          dashboard: Scanner, Stock chart, Fundamentals, Smart money, Backtest, Data health, Settings
 scripts/                      daily run + macOS launchd installer
 tests/                        pytest suite
 ```
@@ -353,3 +450,15 @@ delisted stay in the history (useful against survivorship bias in Phase 2).
    page shows every setup, with trades from about 10 years.
 4. Pick one trade from the trade list and check it on your broker's chart: entry at the next
    day's open, and an exit at the stop, target or after 60 days.
+
+## 9. Checking that Phase 3 works
+
+1. `python -m pytest -q` passes.
+2. `python -m nse_research.cli fundamentals --symbols RELIANCE TCS HDFCBANK` fetches 3 companies
+   from Screener and prints the screen summary. On the **Fundamentals** page, check a few numbers
+   (sales, net profit, ROCE, promoter %) against the company's Screener page.
+3. `python -m nse_research.cli smart-money --symbols RELIANCE TCS HDFCBANK` reads their filings.
+   On the **Smart money** page, the FII/DII % for the latest quarter should match NSE's
+   shareholding pattern for that quarter.
+4. After the full `fundamentals` and `smart-money` runs, the **Data health** page shows how many
+   stocks failed, and why.

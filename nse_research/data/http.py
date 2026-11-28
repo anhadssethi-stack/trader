@@ -47,10 +47,16 @@ class HttpClient:
         if self._session is None:
             s = requests.Session()
             s.headers.update(BROWSER_HEADERS)
-            try:  # NSE sets cookies on the home page; some endpoints need them.
-                s.get("https://www.nseindia.com/", timeout=self.timeout)
-            except requests.RequestException as e:
-                log.debug("NSE warm-up failed (often fine for archive files): %s", e)
+            # NSE's JSON APIs need the cookies its web pages set. The home page sometimes
+            # hangs up on scripts; a quote page sets the same cookies, so try both.
+            for warm in ("https://www.nseindia.com/",
+                         "https://www.nseindia.com/get-quotes/equity?symbol=RELIANCE"):
+                try:
+                    s.get(warm, timeout=self.timeout)
+                    if s.cookies:
+                        break
+                except requests.RequestException as e:
+                    log.debug("NSE warm-up %s failed (often fine for archive files): %s", warm, e)
             self._session = s
         return self._session
 
@@ -60,19 +66,20 @@ class HttpClient:
             time.sleep(wait)
         self._last_request = time.monotonic()
 
-    def get_cached(self, url: str, cache_name: str, refresh: bool = False) -> bytes:
-        """Return file bytes, from cache if present, else download and cache."""
+    def get_cached(self, url: str, cache_name: str, refresh: bool = False, html: bool = False) -> bytes:
+        """Return file bytes, from cache if present, else download and cache.
+        html=True for web pages (Screener), where an HTML body is the expected answer."""
         path = self.cache_dir / cache_name
         if path.exists() and not refresh and path.stat().st_size > 0:
             return path.read_bytes()
-        data = self.get(url)
+        data = self.get(url, html=html)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".part")
         tmp.write_bytes(data)
         tmp.replace(path)
         return data
 
-    def get(self, url: str) -> bytes:
+    def get(self, url: str, html: bool = False) -> bytes:
         last_err: Exception | None = None
         for attempt in range(1, self.retries + 1):
             self._pace()
@@ -97,7 +104,7 @@ class HttpClient:
                 continue
             body = r.content
             # NSE sometimes answers 200 with an HTML error page instead of the file.
-            if body[:15].lower().startswith((b"<!doctype html", b"<html")):
+            if not html and body.lstrip()[:15].lower().startswith((b"<!doctype html", b"<html")):
                 raise NotFound(f"HTML page instead of file: {url}")
             return body
         raise FetchError(str(last_err))

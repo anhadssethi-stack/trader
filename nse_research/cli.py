@@ -10,6 +10,8 @@
   python -m nse_research.cli check-data           # look for missed splits / bad prices
   python -m nse_research.cli repair-splits        # adjust splits/bonuses NSE didn't flag (whole history)
   python -m nse_research.cli backtest             # backtest every setup over all stored history
+  python -m nse_research.cli fundamentals         # results, ratios, red flags (Screener, Yahoo fallback)
+  python -m nse_research.cli smart-money          # shareholding filings, bulk/block deals, FII/DII flows
   python -m nse_research.cli demo                 # build a synthetic demo database
 """
 from __future__ import annotations
@@ -46,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check-data")
     sub.add_parser("repair-splits")
     sub.add_parser("demo")
+    for name in ("fundamentals", "smart-money"):
+        fp = sub.add_parser(name)
+        fp.add_argument("--symbols", nargs="*", help="only these symbols (default: the universe)")
+        fp.add_argument("--limit", type=int, help="fetch at most this many stocks this run")
+        fp.add_argument("--force", action="store_true", help="re-fetch even if fetched recently")
     btp = sub.add_parser("backtest")
     btp.add_argument("--setups", nargs="*", help="setup ids (default: all)")
     btp.add_argument("--symbols", nargs="*", help="limit to these symbols (for a quick test)")
@@ -104,11 +111,40 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "scan":
         df = run_scan(s, st, pipe.scan_symbols())
         print(f"Scanned {len(df)} stocks.")
+    elif a.cmd in ("fundamentals", "smart-money"):
+        syms = a.symbols or pipe.scan_symbols()
+        if a.cmd == "fundamentals":
+            from .fundamentals.pipeline import update_fundamentals
+            from .fundamentals.screen import build_screen
+            frep = update_fundamentals(s, st, syms, force=a.force, limit=a.limit)
+            print(frep.summary())
+            scr = build_screen(s, st)
+            if len(scr):
+                print(f"\n{len(scr)} companies screened: {int((scr['n_red'] == 0).sum())} with no red flag. "
+                      "Most common red flags:")
+                print(scr["red_flags"].explode().value_counts().head(10).to_string())
+        else:
+            from .smartmoney import pipeline as sm
+            nse, srep = sm.client(s), sm.SmartReport()
+            sm.update_deals(s, st, nse, srep)
+            sm.update_flows(st, nse, srep)
+            sm.update_shareholding(s, st, nse, syms, srep, force=a.force, limit=a.limit)
+            print(srep.summary())
     elif a.cmd == "daily":
         rep = pipe.update()
         print(rep.summary())
         df = run_scan(s, st, pipe.scan_symbols())
         print(f"Scanned {len(df)} stocks.")
+        # Phase 3: deals + flows every day; fundamentals and filings for a slice of stale stocks
+        from .fundamentals.pipeline import update_fundamentals
+        from .smartmoney import pipeline as sm
+        nse, srep = sm.client(s), sm.SmartReport()
+        sm.update_deals(s, st, nse, srep)
+        sm.update_flows(st, nse, srep)
+        lim = s["smart_money"]["daily_limit"]
+        sm.update_shareholding(s, st, nse, pipe.scan_symbols(), srep, limit=lim)
+        print(srep.summary())
+        print(update_fundamentals(s, st, pipe.scan_symbols(), limit=lim).summary())
         if rep.errors:
             return 2  # non-zero so the scheduler log shows something needs a look
     elif a.cmd == "repair-splits":

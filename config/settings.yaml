@@ -85,6 +85,62 @@ backtest:
     target_r_grid: [1.5, 2.0, 3.0]
     min_train_trades: 20
 
+fundamentals:
+  sources: [screener, yahoo]    # tried in order per stock; see README for what each gives
+  basis: consolidated           # consolidated | standalone (falls back to standalone if a company has no consolidated accounts)
+  refresh_days: 7               # results change quarterly; re-fetch a stock at most this often
+  request_delay_sec: 2.0        # pause between pages (be polite: ~500 pages take ~20 minutes)
+  min_sector_peers: 4           # P/E-vs-sector needs at least this many profitable peers
+  flags:                        # every red/green flag threshold
+    pledge_pct_red: 10.0          # % of promoter shares pledged
+    promoter_change_pp: 2.0       # promoter stake change over 4 quarters, percentage points
+    growth_green_pct: 15.0        # 3y sales AND profit CAGR at or above this = strong growth
+    loss_quarters_red: 2          # net loss in this many of the last 4 quarters
+    qtr_profit_drop_pct: 30.0     # latest quarter profit down this much vs a year ago
+    roce_min_pct: 10.0
+    roce_green_pct: 20.0
+    roe_min_pct: 10.0             # used instead of ROCE for banks / NBFCs / insurers
+    roe_green_pct: 18.0
+    debt_to_equity_red: 1.0
+    debt_free_max: 0.1
+    interest_cover_red: 3.0
+    cfo_to_profit_red: 0.6        # 3y operating cash flow / 3y net profit
+    cfo_to_profit_green: 1.0
+    debtor_days_rise_red: 30      # debtor days up this many vs 3 years ago
+    pe_vs_sector_expensive: 1.5   # P/E at least 1.5x the sector median
+    pe_vs_sector_cheap: 0.7
+
+smart_money:
+  min_stake_change_pp: 0.5      # quarter-on-quarter change in FII/DII/MF/promoter % worth showing
+  min_holder_change_pp: 0.25    # named >1% holders: smallest change worth showing
+  deals_lookback_days: 90
+  deals_backfill_days: 365      # how far back the first bulk/block deal fetch goes
+  shareholding_refresh_days: 7  # re-check each stock's filings at most this often
+  xbrl_quarters: 2              # read the full XBRL filing for this many latest quarters (~0.5 MB each)
+  daily_limit: 100              # the daily job refreshes at most this many stale stocks (fundamentals and
+                                # shareholding each), so the first full fetch is spread over ~5 days
+  # "Well-known investors". Edit freely: `match` is a list of regular expressions
+  # tested (case-insensitive) against holder names in shareholding filings and
+  # client names in bulk/block deals. Names as they appear in filings, not nicknames.
+  investors:
+    - {name: "Rakesh Jhunjhunwala (estate) / Rekha Jhunjhunwala", match: ["JHUNJHUNWALA", "RARE ENTERPRISES"]}
+    - {name: "Radhakishan Damani", match: ["RADHAKISHAN.*DAMANI", "DERIVE TRADING", "BRIGHT STAR INVESTMENTS"]}
+    - {name: "Ramesh Damani", match: ["RAMESH S.*DAMANI"]}
+    - {name: "Ashish Kacholia", match: ["KACHOLIA", "SURYAVANSHI COMMOTRADE", "BENGAL FINANCE"]}
+    - {name: "Vijay Kedia", match: ["VIJAY KISHANLAL KEDIA", "KEDIA SECURITIES"]}
+    - {name: "Dolly / Rajiv Khanna", match: ["DOLLY KHANNA", "RAJIV KUMAR KHANNA"]}
+    - {name: "Mukul Agrawal", match: ["MUKUL MAHAVIR AGRAWAL", "MUKUL AGRAWAL", "PARAM CAPITAL"]}
+    - {name: "Sunil Singhania (Abakkus)", match: ["ABAKKUS", "SUNIL SINGHANIA"]}
+    - {name: "Ashish Dhawan", match: ["ASHISH DHAWAN"]}
+    - {name: "Porinju Veliyath", match: ["PORINJU", "EQUITY INTELLIGENCE"]}
+    - {name: "Nemish Shah", match: ["NEMISH S.*SHAH", "ENAM INVESTMENT"]}
+    - {name: "Madhusudan Kela", match: ["MADHUSUDAN.*KELA", "SINGULARITY"]}
+    - {name: "Akash Bhanshali", match: ["BHANSHALI"]}
+    - {name: "Anil Kumar Goel", match: ["ANIL KUMAR GOEL"]}
+    - {name: "Mohnish Pabrai", match: ["PABRAI", "DALAL STREET,? LLC"]}
+    - {name: "Government of Singapore", match: ["GOVERNMENT OF SINGAPORE"]}
+    - {name: "LIC", match: ["LIFE INSURANCE CORPORATION OF INDIA"]}
+
 costs:                          # Indian rates as of 2025. Check against your broker's contract note.
   delivery:                     # long trades (cash delivery)
     brokerage_pct: 0.03         # per order; many discount brokers charge 0 for delivery
